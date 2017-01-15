@@ -29,7 +29,7 @@ type Results struct {
 	tmpfile *os.File
 }
 
-func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32) {
+func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, f func(int, uint64)) {
 	if (end <= 0) || (start > end) {
 		panic(errors.New("start show not less than end"))
 	}
@@ -87,6 +87,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					percent := int((float64(currentRes.end) / float64(end)) * 100)
 					leftTime := (float64(end-start)/1024)/speed - endTime
 					fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(downloaded), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
+					f(percent, downloaded)
 				}
 			}()
 		}
