@@ -16,13 +16,13 @@ import (
 )
 
 type Jobs struct {
-	playno uint8
+	playno uint32
 	start  uint64
 	end    uint64
 }
 
 type Results struct {
-	playno  uint8
+	playno  uint32
 	start   uint64
 	end     uint64
 	bits    uint32
@@ -34,18 +34,18 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		panic(errors.New("start show not less than end"))
 	}
 	startTime := time.Now()
-	jobs := make(chan Jobs, 100)
-	results := make(chan Results, 100)
-	tasks := make(map[uint8]Results)
+	jobs := make(chan Jobs, 8192)
+	results := make(chan Results, 8192)
+	tasks := make(map[uint32]Results)
 
 	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND, 0666); err == nil {
-		var playno uint8 = 0
-		for ; playno < thread; playno++ {
-			go worker(url, saveas, jobs, results)
+		var playno uint32 = 0
+		for ; playno < uint32(thread); playno++ {
+			go worker(url, saveas, jobs, results, thunk)
 		}
 		playno = 0
 		for {
-			var cstart uint64 = start + uint64(uint32(playno)*thunk)
+			var cstart uint64 = start + uint64(playno*thunk)
 			var cend uint64 = cstart + uint64(thunk)
 			if cstart >= end {
 				break
@@ -57,8 +57,8 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 			playno++
 		}
 
-		var current uint8 = 0
-		var played uint8 = 0
+		var current uint32 = 0
+		var played uint32 = 0
 
 		var downloaded uint64 = 0
 
@@ -86,8 +86,10 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					speed := float64(downloaded/1024) / endTime
 					percent := int((float64(currentRes.end) / float64(end)) * 100)
 					leftTime := (float64(end-start)/1024)/speed - endTime
-					fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(downloaded), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
-					f(percent, downloaded)
+					fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(currentRes.end), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
+					if f != nil {
+						f(percent, downloaded)
+					}
 				}
 			}()
 		}
@@ -97,16 +99,16 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 
 }
 
-func worker(url string, saveas string, jobs <-chan Jobs, results chan<- Results) {
+func worker(url string, saveas string, jobs <-chan Jobs, results chan<- Results, thunk uint32) {
 	for job := range jobs {
 		// fmt.Println(job)
-		tmpfile, bits := startChunkLoad(url, saveas, job.start, job.end, job.playno)
+		tmpfile, bits := startChunkLoad(url, saveas, job.start, job.end, job.playno, thunk)
 		results <- Results{playno: job.playno, start: job.start, end: job.end, bits: bits, tmpfile: tmpfile}
 	}
 }
 
-func startChunkLoad(url string, saveas string, start uint64, end uint64, playno uint8) (*os.File, uint32) {
-	client := &http.Client{}
+func startChunkLoad(url string, saveas string, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
+	client := &http.Client{Timeout: time.Duration(thunk/1024/8) * time.Second}
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
 		if res, err := client.Do(req); err == nil {
@@ -114,7 +116,7 @@ func startChunkLoad(url string, saveas string, start uint64, end uint64, playno 
 			if res.StatusCode == 416 {
 				return nil, 0
 			} else if (res.StatusCode >= 200) && (res.StatusCode <= 209) {
-				if tmpfile, err := ioutil.TempFile("", "disk"); err == nil {
+				if tmpfile, err := ioutil.TempFile("", "disk"+strconv.Itoa(int(playno))+"-"); err == nil {
 					// fmt.Println(res, res.StatusCode, http.StatusOK)
 					if bits, err := io.Copy(tmpfile, res.Body); err == nil {
 						tmpfile.Seek(0, 0)
@@ -122,7 +124,7 @@ func startChunkLoad(url string, saveas string, start uint64, end uint64, playno 
 					} else {
 						fmt.Println(err, "Error when io copy,Try again")
 						time.Sleep(time.Second)
-						return startChunkLoad(url, saveas, start, end, playno)
+						return startChunkLoad(url, saveas, start, end, playno, thunk)
 					}
 				} else {
 					fmt.Println("Error when create tmpfile")
@@ -131,11 +133,12 @@ func startChunkLoad(url string, saveas string, start uint64, end uint64, playno 
 			} else {
 				fmt.Println(res.Status, "Try again")
 				time.Sleep(time.Second)
-				return startChunkLoad(url, saveas, start, end, playno)
+				return startChunkLoad(url, saveas, start, end, playno, thunk)
 			}
 		} else {
 			fmt.Println("Error when do request Try again")
-			panic(err)
+			time.Sleep(time.Second)
+			return startChunkLoad(url, saveas, start, end, playno, thunk)
 		}
 	} else {
 		fmt.Println("Error when init request")
