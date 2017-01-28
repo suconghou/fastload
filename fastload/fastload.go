@@ -29,7 +29,7 @@ type Results struct {
 	tmpfile *os.File
 }
 
-func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, f func(int, uint64)) {
+func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) {
 	if (end <= 0) || (start > end) {
 		panic(errors.New("start show not less than end"))
 	}
@@ -39,6 +39,13 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 	tasks := make(map[uint32]Results)
 
 	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND, 0666); err == nil {
+		totalSize := end - start
+		if totalSize < (uint64(thread) * uint64(thunk)) {
+			thunk = 262144
+			if totalSize < (uint64(thread) * uint64(thunk)) {
+				thread = 1
+			}
+		}
 		var playno uint32 = 0
 		for ; playno < uint32(thread); playno++ {
 			go worker(url, saveas, jobs, results, thunk)
@@ -71,7 +78,14 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					if resource, ok := tasks[played]; ok {
 						if resource.tmpfile != nil {
 							downloaded = downloaded + uint64(resource.bits)
-							io.Copy(file, resource.tmpfile)
+							_, err := io.Copy(file, resource.tmpfile)
+							if err != nil {
+								panic(err)
+							}
+							if stdout {
+								resource.tmpfile.Seek(0, 0)
+								io.Copy(os.Stdout, resource.tmpfile)
+							}
 							resource.tmpfile.Close()
 							os.Remove(resource.tmpfile.Name())
 						}
@@ -86,7 +100,9 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					speed := float64(downloaded/1024) / endTime
 					percent := int((float64(currentRes.end) / float64(end)) * 100)
 					leftTime := (float64(end-start)/1024)/speed - endTime
-					fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(currentRes.end), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
+					if !stdout {
+						fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(currentRes.end), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
+					}
 					if f != nil {
 						f(percent, downloaded)
 					}
