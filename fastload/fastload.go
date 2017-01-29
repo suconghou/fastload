@@ -48,7 +48,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		}
 		var playno uint32 = 0
 		for ; playno < uint32(thread); playno++ {
-			go worker(url, saveas, jobs, results, thunk)
+			go worker(url, jobs, results, thunk)
 		}
 		playno = 0
 		for {
@@ -115,46 +115,43 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 
 }
 
-func worker(url string, saveas string, jobs <-chan Jobs, results chan<- Results, thunk uint32) {
+func worker(url string, jobs <-chan Jobs, results chan<- Results, thunk uint32) {
 	for job := range jobs {
 		// fmt.Println(job)
-		tmpfile, bits := startChunkLoad(url, saveas, job.start, job.end, job.playno, thunk)
-		results <- Results{playno: job.playno, start: job.start, end: job.end, bits: bits, tmpfile: tmpfile}
+		if tfile, err := ioutil.TempFile("", "disk"+strconv.Itoa(int(job.playno))+"-"); err == nil {
+			tmpfile, bits := startChunkLoad(url, tfile, job.start, job.end, job.playno, thunk)
+			results <- Results{playno: job.playno, start: job.start, end: job.end, bits: bits, tmpfile: tmpfile}
+		} else {
+			panic(err)
+		}
 	}
 }
 
-func startChunkLoad(url string, saveas string, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
+func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
 	client := &http.Client{Timeout: time.Duration(thunk/1024/8) * time.Second}
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
+		lastLoad := GetContinue(tfile.Name())
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+lastLoad, end-1))
 		if res, err := client.Do(req); err == nil {
 			defer res.Body.Close()
 			if res.StatusCode == 416 {
-				return nil, 0
+				return tfile, 0
 			} else if (res.StatusCode >= 200) && (res.StatusCode <= 209) {
-				if tmpfile, err := ioutil.TempFile("", "disk"+strconv.Itoa(int(playno))+"-"); err == nil {
-					// fmt.Println(res, res.StatusCode, http.StatusOK)
-					if bits, err := io.Copy(tmpfile, res.Body); err == nil {
-						tmpfile.Seek(0, 0)
-						return tmpfile, uint32(bits)
-					} else {
-						fmt.Println(err, "Error when io copy,Try again")
-						time.Sleep(time.Second)
-						return startChunkLoad(url, saveas, start, end, playno, thunk)
-					}
+				if bits, err := io.Copy(tfile, res.Body); err == nil {
+					tfile.Seek(0, 0)
+					return tfile, uint32(bits)
 				} else {
-					fmt.Println("Error when create tmpfile")
-					panic(err)
+					fmt.Println(err, "Error when io copy,Try again")
+					time.Sleep(time.Second)
+					return startChunkLoad(url, tfile, start, end, playno, thunk)
 				}
 			} else {
-				fmt.Println(res.Status, "Try again")
-				time.Sleep(time.Second)
-				return startChunkLoad(url, saveas, start, end, playno, thunk)
+				panic(errors.New("Download error : " + res.Status))
 			}
 		} else {
 			fmt.Println("Error when do request Try again")
 			time.Sleep(time.Second)
-			return startChunkLoad(url, saveas, start, end, playno, thunk)
+			return startChunkLoad(url, tfile, start, end, playno, thunk)
 		}
 	} else {
 		fmt.Println("Error when init request")
@@ -182,7 +179,6 @@ func GetContinue(saveas string) uint64 {
 }
 
 func GetStorePath(url string) (string, string) {
-
 	urlName := path.Base(url)
 	urlNameArr := strings.Split(urlName, "?")
 	urlName = urlNameArr[0]
@@ -199,7 +195,7 @@ func GetUrlInfo(url string) uint64 {
 		return sourceSize
 	}
 	if response.StatusCode != http.StatusOK {
-		fmt.Println("Server return non-200 status: %v\n", response.Status)
+		fmt.Printf("Server return non-200 status: %s\n", response.Status)
 		return sourceSize
 	}
 	length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
