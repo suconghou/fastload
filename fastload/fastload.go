@@ -159,6 +159,13 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 	}
 }
 
+func CopyToStdOut(filePath string) {
+	if file, err := os.OpenFile(filePath, os.O_RDONLY, 0777); err == nil {
+		io.Copy(os.Stdout, file)
+		file.Close()
+	}
+}
+
 func GetContinue(saveas string) uint64 {
 	var fileSize uint64 = 0
 	if stat, err := os.Stat(saveas); os.IsNotExist(err) {
