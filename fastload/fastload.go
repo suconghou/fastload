@@ -29,6 +29,11 @@ type Results struct {
 	tmpfile *os.File
 }
 
+type Stdjob struct {
+	start int64
+	size  int64
+}
+
 func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) {
 	if (end <= 0) || (start > end) {
 		panic(errors.New("start show not less than end"))
@@ -38,6 +43,8 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 	results := make(chan Results, 8192)
 	tasks := make(map[uint32]Results)
 
+	stdjobs := make(chan Stdjob, 128)
+
 	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND, 0666); err == nil {
 		totalSize := end - start
 		if totalSize < (uint64(thread) * uint64(thunk)) {
@@ -45,6 +52,9 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 			if totalSize < (uint64(thread) * uint64(thunk)) {
 				thread = 1
 			}
+		}
+		if stdout {
+			go stdoutWorker(saveas, stdjobs)
 		}
 		var playno uint32 = 0
 		for ; playno < uint32(thread); playno++ {
@@ -68,7 +78,11 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		var played uint32 = 0
 
 		var downloaded uint64 = 0
-
+		stat, _ := os.Stat(saveas)
+		var currpos int64 = stat.Size()
+		if currpos > 0 {
+			stdjobs <- Stdjob{start: 0, size: currpos}
+		}
 		for ; current < playno; current++ {
 			res := <-results
 			tasks[res.playno] = res
@@ -78,16 +92,16 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					if resource, ok := tasks[played]; ok {
 						if resource.tmpfile != nil {
 							downloaded = downloaded + uint64(resource.bits)
-							_, err := io.Copy(file, resource.tmpfile)
+							bits, err := io.Copy(file, resource.tmpfile)
 							if err != nil {
 								panic(err)
 							}
-							if stdout {
-								resource.tmpfile.Seek(0, 0)
-								io.Copy(os.Stdout, resource.tmpfile)
-							}
 							resource.tmpfile.Close()
 							os.Remove(resource.tmpfile.Name())
+							if stdout {
+								stdjobs <- Stdjob{start: currpos, size: bits}
+							}
+							currpos = currpos + bits
 						}
 						// fmt.Println("Key Found", played)
 						played++
@@ -127,6 +141,18 @@ func worker(url string, jobs <-chan Jobs, results chan<- Results, thunk uint32) 
 	}
 }
 
+func stdoutWorker(filePath string, stdjobs <-chan Stdjob) {
+	if file, err := os.OpenFile(filePath, os.O_RDONLY, 0777); err == nil {
+		for job := range stdjobs {
+			file.Seek(job.start, 0)
+			if _, err = io.CopyN(os.Stdout, file, job.size); err != nil {
+				panic(err)
+			}
+		}
+		file.Close()
+	}
+}
+
 func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
 	client := &http.Client{Timeout: time.Duration(thunk/1024/8) * time.Second}
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
@@ -141,20 +167,21 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 					tfile.Seek(0, 0)
 					return tfile, uint32(bits)
 				} else {
-					fmt.Println(err, "Error when io copy,Try again")
+					os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err)))
 					time.Sleep(time.Second)
 					return startChunkLoad(url, tfile, start, end, playno, thunk)
 				}
 			} else {
+				os.Stderr.Write([]byte(fmt.Sprintf("\nDownload error : %s\n", res.Status)))
 				panic(errors.New("Download error : " + res.Status))
 			}
 		} else {
-			fmt.Println("Error when do request Try again")
+			os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when do request,Try again\n", err)))
 			time.Sleep(time.Second)
 			return startChunkLoad(url, tfile, start, end, playno, thunk)
 		}
 	} else {
-		fmt.Println("Error when init request")
+		os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when init request", err)))
 		panic(err)
 	}
 }
@@ -172,7 +199,7 @@ func GetContinue(saveas string) uint64 {
 		f, err := os.Create(saveas)
 		if err != nil {
 			if os.IsPermission(err) {
-				fmt.Println(err)
+				os.Stderr.Write([]byte(fmt.Sprintf("%s:GetContinue Error", err)))
 				os.Exit(1)
 			} else {
 				panic(err)
@@ -198,11 +225,11 @@ func GetUrlInfo(url string) uint64 {
 	var sourceSize uint64 = 0
 	response, err := http.Head(url)
 	if err != nil {
-		fmt.Println("Error while get url info ", url, ":", err)
+		os.Stderr.Write([]byte(fmt.Sprintf("Error while get url info %s : %s", url, err)))
 		return sourceSize
 	}
 	if response.StatusCode != http.StatusOK {
-		fmt.Printf("Server return non-200 status: %s\n", response.Status)
+		os.Stderr.Write([]byte(fmt.Sprintf("Server return non-200 status: %s\n", response.Status)))
 		return sourceSize
 	}
 	length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
