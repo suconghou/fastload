@@ -34,6 +34,8 @@ type Stdjob struct {
 	size  int64
 }
 
+var reqHeader = map[string]string{}
+
 func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) error {
 	if (start < 0) || (start > end) || (end < 0) {
 		return fmt.Errorf("Error start or end")
@@ -170,7 +172,7 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
 		lastLoad, _ := GetContinue(tfile.Name())
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+lastLoad, end-1))
-		if res, err := client.Do(req); err == nil {
+		if res, err := client.Do(reqWithHeader(req)); err == nil {
 			defer res.Body.Close()
 			if res.StatusCode == 416 {
 				return tfile, 0
@@ -234,16 +236,32 @@ func GetStorePath(url string) (string, string) {
 
 func GetUrlInfo(url string) (uint64, error) {
 	var sourceSize uint64 = 0
-	response, err := http.Head(url)
-	if err != nil {
-		return sourceSize, fmt.Errorf("Error while get url info %s : %s", url, err)
+	client := &http.Client{Timeout: 5 * time.Second}
+	if req, err := http.NewRequest("HEAD", url, nil); err == nil {
+		if response, err := client.Do(reqWithHeader(req)); err == nil {
+			if response.StatusCode != http.StatusOK {
+				return sourceSize, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
+			}
+			length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
+			sourceSize = uint64(length)
+			return sourceSize, nil
+		} else {
+			return sourceSize, fmt.Errorf("Error while get url info %s : %s", url, err)
+		}
+	} else {
+		return sourceSize, fmt.Errorf("Error while init url request %s : %s", url, err)
 	}
-	if response.StatusCode != http.StatusOK {
-		return sourceSize, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
+}
+
+func reqWithHeader(req *http.Request) *http.Request {
+	for key, value := range reqHeader {
+		req.Header.Add(key, value)
 	}
-	length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
-	sourceSize = uint64(length)
-	return sourceSize, nil
+	return req
+}
+
+func SetHeader(header map[string]string) {
+	reqHeader = header
 }
 
 func Bar(vl int, width int) string {
