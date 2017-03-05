@@ -34,9 +34,9 @@ type Stdjob struct {
 	size  int64
 }
 
-func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) {
-	if (end <= 0) || (start > end) {
-		panic(errors.New("start show not less than end"))
+func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) error {
+	if (start < 0) || (start > end) || (end < 0) {
+		return fmt.Errorf("Error start or end")
 	}
 	startTime := time.Now()
 	jobs := make(chan Jobs, 8192)
@@ -46,13 +46,16 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 	stdjobs := make(chan Stdjob, 128)
 
 	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND, 0666); err == nil {
-		totalSize := end - start
-		if totalSize < (uint64(thread) * uint64(thunk)) {
-			thunk = 262144
+		if end > 0 {
+			totalSize := end - start
 			if totalSize < (uint64(thread) * uint64(thunk)) {
-				thread = 1
+				thunk = 262144
+				if totalSize < (uint64(thread) * uint64(thunk)) {
+					thread = 1
+				}
 			}
 		}
+
 		if stdout {
 			go stdoutWorker(saveas, stdjobs)
 		}
@@ -64,11 +67,17 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		for {
 			var cstart uint64 = start + uint64(playno*thunk)
 			var cend uint64 = cstart + uint64(thunk)
-			if cstart >= end {
-				break
-			}
-			if cend >= end {
-				cend = end
+			if end > 0 {
+				if cstart >= end {
+					break
+				}
+				if cend >= end {
+					cend = end
+				}
+			} else {
+				if playno >= 8192 {
+					break
+				}
 			}
 			jobs <- Jobs{playno: playno, start: cstart, end: cend}
 			playno++
@@ -112,6 +121,9 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					}
 					endTime := time.Since(startTime).Seconds()
 					speed := float64(downloaded/1024) / endTime
+					if end <= 0 {
+						end = 1048576 * 1024 // 文件大小未知,假定为1G
+					}
 					percent := int((float64(currentRes.end) / float64(end)) * 100)
 					leftTime := (float64(end-start)/1024)/speed - endTime
 					if !stdout {
@@ -124,9 +136,9 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 			}()
 		}
 	} else {
-		panic(err)
+		return err
 	}
-
+	return nil
 }
 
 func worker(url string, jobs <-chan Jobs, results chan<- Results, thunk uint32) {
@@ -156,7 +168,7 @@ func stdoutWorker(filePath string, stdjobs <-chan Stdjob) {
 func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
 	client := &http.Client{Timeout: time.Duration(thunk/1024/8) * time.Second}
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
-		lastLoad := GetContinue(tfile.Name())
+		lastLoad, _ := GetContinue(tfile.Name())
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+lastLoad, end-1))
 		if res, err := client.Do(req); err == nil {
 			defer res.Body.Close()
@@ -193,23 +205,22 @@ func CopyToStdOut(filePath string) {
 	}
 }
 
-func GetContinue(saveas string) uint64 {
+func GetContinue(saveas string) (uint64, error) {
 	var fileSize uint64 = 0
 	if stat, err := os.Stat(saveas); os.IsNotExist(err) {
 		f, err := os.Create(saveas)
 		if err != nil {
 			if os.IsPermission(err) {
-				os.Stderr.Write([]byte(fmt.Sprintf("%s:GetContinue Error", err)))
-				os.Exit(1)
+				return 0, fmt.Errorf("%s:GetContinue IsPermission Error", err)
 			} else {
-				panic(err)
+				return 0, err
 			}
 		}
 		f.Close()
 	} else {
 		fileSize = uint64(stat.Size())
 	}
-	return fileSize
+	return fileSize, nil
 }
 
 func GetStorePath(url string) (string, string) {
@@ -221,20 +232,18 @@ func GetStorePath(url string) (string, string) {
 	return urlName, filePath
 }
 
-func GetUrlInfo(url string) uint64 {
+func GetUrlInfo(url string) (uint64, error) {
 	var sourceSize uint64 = 0
 	response, err := http.Head(url)
 	if err != nil {
-		os.Stderr.Write([]byte(fmt.Sprintf("Error while get url info %s : %s", url, err)))
-		return sourceSize
+		return sourceSize, fmt.Errorf("Error while get url info %s : %s", url, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		os.Stderr.Write([]byte(fmt.Sprintf("Server return non-200 status: %s\n", response.Status)))
-		return sourceSize
+		return sourceSize, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
 	}
 	length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
 	sourceSize = uint64(length)
-	return sourceSize
+	return sourceSize, nil
 }
 
 func Bar(vl int, width int) string {
