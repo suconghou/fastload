@@ -1,7 +1,6 @@
 package fastload
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -124,7 +123,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 					endTime := time.Since(startTime).Seconds()
 					speed := float64(downloaded/1024) / endTime
 					if end <= 0 {
-						end = 1048576 * 1024 // 文件大小未知,假定为1G
+						end = 1048576 * 1024 // 文件大小未知,假定为1G,这里只是按1G去显示进度条,实际可下载8192个thunk
 					}
 					percent := int((float64(currentRes.end) / float64(end)) * 100)
 					leftTime := (float64(end-start)/1024)/speed - endTime
@@ -186,8 +185,9 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 					return startChunkLoad(url, tfile, start, end, playno, thunk)
 				}
 			} else {
-				os.Stderr.Write([]byte(fmt.Sprintf("\nDownload error : %s\n", res.Status)))
-				panic(errors.New("Download error : " + res.Status))
+				os.Stderr.Write([]byte(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status)))
+				time.Sleep(time.Second * 3)
+				return startChunkLoad(url, tfile, start, end, playno, thunk)
 			}
 		} else {
 			os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when do request,Try again\n", err)))
@@ -234,22 +234,23 @@ func GetStorePath(url string) (string, string) {
 	return urlName, filePath
 }
 
-func GetUrlInfo(url string) (uint64, error) {
+func GetUrlInfo(url string) (uint64, bool, error) {
 	var sourceSize uint64 = 0
 	client := &http.Client{Timeout: 5 * time.Second}
 	if req, err := http.NewRequest("HEAD", url, nil); err == nil {
 		if response, err := client.Do(reqWithHeader(req)); err == nil {
 			if response.StatusCode != http.StatusOK {
-				return sourceSize, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
+				return sourceSize, false, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
 			}
 			length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
+			var rangeAble bool = response.Header.Get("Accept-Ranges") == "bytes"
 			sourceSize = uint64(length)
-			return sourceSize, nil
+			return sourceSize, rangeAble, nil
 		} else {
-			return sourceSize, fmt.Errorf("Error while get url info %s : %s", url, err)
+			return sourceSize, false, fmt.Errorf("Error while get url info %s : %s", url, err)
 		}
 	} else {
-		return sourceSize, fmt.Errorf("Error while init url request %s : %s", url, err)
+		return sourceSize, false, fmt.Errorf("Error while init url request %s : %s", url, err)
 	}
 }
 

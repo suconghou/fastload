@@ -14,9 +14,13 @@ func main() {
 
 	filename, saveas := fastload.GetStorePath(url)
 	start, _ := fastload.GetContinue(saveas)
-	end, _ := fastload.GetUrlInfo(url)
-	fmt.Println(start, end)
-	fastload.Load(url, saveas, start, end, thread, thunk, stdout, func(per int, download uint64) {
-	})
-	fmt.Println("\n", filename, " 下载完毕")
+	end, rangAble, err := fastload.GetUrlInfo(url)
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(start, end, rangAble)
+		fastload.Load(url, saveas, start, end, thread, thunk, stdout, func(per int, download uint64) {
+		})
+		fmt.Println("\n", filename, " 下载完毕")
+	}
 }
