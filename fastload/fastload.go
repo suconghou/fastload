@@ -66,7 +66,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		}
 		playno = 0
 		for {
-			var cstart uint64 = start + uint64(playno*thunk)
+			var cstart uint64 = start + uint64(playno)*uint64(thunk)
 			var cend uint64 = cstart + uint64(thunk)
 			if end > 0 {
 				if cstart >= end {
