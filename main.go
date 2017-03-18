@@ -14,7 +14,7 @@ func main() {
 
 	filename, saveas := fastload.GetStorePath(url)
 	start, _ := fastload.GetContinue(saveas)
-	end, rangAble, err := fastload.GetUrlInfo(url)
+	end, rangAble, err := fastload.GetUrlInfo(url, false)
 	if err != nil {
 		fmt.Println(err)
 	} else {

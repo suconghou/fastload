@@ -236,10 +236,10 @@ func GetStorePath(url string) (string, string) {
 	return urlName, filePath
 }
 
-func GetUrlInfo(url string) (uint64, bool, error) {
+func GetUrlInfo(url string, useGet bool) (uint64, bool, error) {
 	var sourceSize uint64 = 0
-	client := &http.Client{Timeout: 5 * time.Second}
-	if req, err := http.NewRequest("HEAD", url, nil); err == nil {
+	client := &http.Client{Timeout: 15 * time.Second}
+	if req, err := http.NewRequest(BoolString(useGet, "GET", "HEAD"), url, nil); err == nil {
 		if response, err := client.Do(reqWithHeader(req)); err == nil {
 			if response.StatusCode != http.StatusOK {
 				return sourceSize, false, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
