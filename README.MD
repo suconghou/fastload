@@ -9,4 +9,4 @@ fastload.Load(url, saveas, start, end, thread, thunk, stdout, func(per int, down
 })
 ```
 
-for unknow file size set  sen to 0
+for unknow file size set end to 0

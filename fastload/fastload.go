@@ -75,7 +75,9 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 				if cend >= end {
 					cend = end
 				}
-			} else {
+			} else if thread == 1 && playno > 0 { // 文件大小未知,又不支持断点续传(不支持断点续传,thread应设置为1),不分块下载(最多只能下载一个thunk)
+				break
+			} else { // 文件大小未知,但是支持断点续传(在调用方设置thread大于1)
 				if playno >= 8192 {
 					break
 				}
@@ -266,7 +268,12 @@ func SetHeader(header map[string]string) {
 }
 
 func Bar(vl int, width int) string {
-	return fmt.Sprintf("%s %s", strings.Repeat("█", vl/(100/width)), strings.Repeat(" ", width-vl/(100/width)))
+	var loaded int = vl / (100 / width)
+	var remain int = width - loaded
+	if remain < 0 {
+		remain = 0
+	}
+	return fmt.Sprintf("%s %s", strings.Repeat("█", loaded), strings.Repeat(" ", remain))
 }
 
 func BoolString(b bool, s, s1 string) string {
