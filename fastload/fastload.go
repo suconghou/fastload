@@ -169,7 +169,7 @@ func stdoutWorker(filePath string, stdjobs <-chan Stdjob) {
 }
 
 func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
-	client := &http.Client{Timeout: time.Duration(thunk/1024/8) * time.Second}
+	client := &http.Client{Timeout: time.Duration(thunk/1024/4) * time.Second}
 	if req, err := http.NewRequest("GET", url, nil); err == nil {
 		lastLoad, _ := GetContinue(tfile.Name())
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+lastLoad, end-1))
@@ -182,22 +182,22 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 					tfile.Seek(0, 0)
 					return tfile, uint32(bits)
 				} else {
-					os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err)))
+					debug([]byte(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err)))
 					time.Sleep(time.Second)
 					return startChunkLoad(url, tfile, start, end, playno, thunk)
 				}
 			} else {
-				os.Stderr.Write([]byte(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status)))
+				debug([]byte(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status)))
 				time.Sleep(time.Second * 3)
 				return startChunkLoad(url, tfile, start, end, playno, thunk)
 			}
 		} else {
-			os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when do request,Try again\n", err)))
+			debug([]byte(fmt.Sprintf("\n%s:Error when do request,Try again\n", err)))
 			time.Sleep(time.Second)
 			return startChunkLoad(url, tfile, start, end, playno, thunk)
 		}
 	} else {
-		os.Stderr.Write([]byte(fmt.Sprintf("\n%s:Error when init request", err)))
+		debug([]byte(fmt.Sprintf("\n%s:Error when init request", err)))
 		panic(err)
 	}
 }
