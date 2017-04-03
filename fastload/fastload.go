@@ -46,7 +46,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 
 	stdjobs := make(chan Stdjob, 128)
 
-	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND, 0666); err == nil {
+	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666); err == nil {
 		if end > 0 {
 			totalSize := end - start
 			if totalSize < (uint64(thread) * uint64(thunk)) {
