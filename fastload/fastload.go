@@ -182,22 +182,22 @@ func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno
 					tfile.Seek(0, 0)
 					return tfile, uint32(bits)
 				} else {
-					debug([]byte(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err)))
+					debug(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err))
 					time.Sleep(time.Second)
 					return startChunkLoad(url, tfile, start, end, playno, thunk)
 				}
 			} else {
-				debug([]byte(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status)))
+				debug(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status))
 				time.Sleep(time.Second * 3)
 				return startChunkLoad(url, tfile, start, end, playno, thunk)
 			}
 		} else {
-			debug([]byte(fmt.Sprintf("\n%s:Error when do request,Try again\n", err)))
+			debug(fmt.Sprintf("\n%s:Error when do request,Try again\n", err))
 			time.Sleep(time.Second)
 			return startChunkLoad(url, tfile, start, end, playno, thunk)
 		}
 	} else {
-		debug([]byte(fmt.Sprintf("\n%s:Error when init request", err)))
+		debug(fmt.Sprintf("\n%s:Error when init request", err))
 		panic(err)
 	}
 }
