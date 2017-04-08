@@ -40,8 +40,8 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 		return fmt.Errorf("Error start or end")
 	}
 	startTime := time.Now()
-	jobs := make(chan Jobs, 8192)
-	results := make(chan Results, 8192)
+	jobs := make(chan Jobs, 20480)
+	results := make(chan Results, 20480)
 	tasks := make(map[uint32]Results)
 
 	stdjobs := make(chan Stdjob, 128)
@@ -77,7 +77,7 @@ func Load(url string, saveas string, start uint64, end uint64, thread uint8, thu
 				}
 			} else if thread == 1 && playno > 0 { // 文件大小未知,又不支持断点续传(不支持断点续传,thread应设置为1),不分块下载(最多只能下载一个thunk)
 				break
-			} else { // 文件大小未知,但是支持断点续传(在调用方设置thread大于1)
+			} else { // 文件大小未知,但是支持断点续传(在调用方设置thread大于1),设置最大下载8192个thunk
 				if playno >= 8192 {
 					break
 				}
@@ -244,9 +244,9 @@ func GetUrlInfo(url string, useGet bool) (uint64, bool, error) {
 			if response.StatusCode != http.StatusOK {
 				return sourceSize, false, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
 			}
-			length, _ := strconv.Atoi(response.Header.Get("Content-Length"))
+			length, _ := strconv.ParseUint(response.Header.Get("Content-Length"), 10, 64)
 			var rangeAble bool = response.Header.Get("Accept-Ranges") == "bytes"
-			sourceSize = uint64(length)
+			sourceSize = length
 			return sourceSize, rangeAble, nil
 		} else {
 			return sourceSize, false, fmt.Errorf("Error while get url info %s : %s", url, err)
