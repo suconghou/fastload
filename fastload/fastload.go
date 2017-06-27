@@ -1,293 +1,339 @@
 package fastload
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"math"
+	"log"
 	"net/http"
-	"os"
-	"path"
-	"path/filepath"
-	"strconv"
-	"strings"
+	"runtime"
+	"runtime/debug"
 	"time"
 )
 
-type Jobs struct {
-	playno uint32
-	start  uint64
-	end    uint64
+// Fastloader instance
+type Fastloader struct {
+	url       string
+	thunk     int64
+	thread    int32
+	total     int64
+	loaded    int64
+	readed    int64
+	start     int64
+	end       int64
+	reqHeader http.Header
+	debug     bool
+	current   int32
+	played    int32
+	endno     int32
+	tasks     chan loadertask
+	jobs      chan loaderjob
+	dataMap   map[int32]loadertask
+	startTime time.Time
+	bytesgot  chan int64
+	progress  func(received int64, readed int64, total int64, duration float64, start int64, end int64)
 }
 
-type Results struct {
-	playno  uint32
-	start   uint64
-	end     uint64
-	bits    uint32
-	tmpfile *os.File
+type loadertask struct {
+	data   bytes.Buffer
+	playno int32
+	err    error
 }
 
-type Stdjob struct {
-	start int64
-	size  int64
+type loaderjob struct {
+	playno int32
+	start  int64
+	end    int64
 }
 
-var reqHeader = map[string]string{}
-
-func Load(url string, saveas string, start uint64, end uint64, thread uint8, thunk uint32, stdout bool, f func(int, uint64)) error {
-	if (start < 0) || (start > end) || (end < 0) {
-		return fmt.Errorf("Error start or end")
+func (f *Fastloader) Read(p []byte) (int, error) {
+	if f.readed == f.total {
+		return 0, io.EOF
 	}
-	startTime := time.Now()
-	jobs := make(chan Jobs, 20480)
-	results := make(chan Results, 20480)
-	tasks := make(map[uint32]Results)
-
-	stdjobs := make(chan Stdjob, 128)
-
-	if file, err := os.OpenFile(saveas, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666); err == nil {
-		if end > 0 {
-			totalSize := end - start
-			if totalSize < (uint64(thread) * uint64(thunk)) {
-				thunk = 262144
-				if totalSize < (uint64(thread) * uint64(thunk)) {
-					thread = 1
+	if resource, ok := f.dataMap[f.played]; ok {
+		delete(f.dataMap, f.played) // free memory
+		if resource.err != nil {
+			return 0, resource.err
+		}
+		n, err := resource.data.Read(p)
+		f.readed = f.readed + int64(n)
+		if resource.data.Len() == 0 {
+			if f.played > 0 && f.played == f.endno {
+				if f.progress != nil {
+					f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
 				}
+				f.Close()
+				return n, io.EOF
 			}
+			f.played++
+		} else {
+			f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 		}
-
-		if stdout {
-			go stdoutWorker(saveas, stdjobs)
-		}
-		var playno uint32 = 0
-		for ; playno < uint32(thread); playno++ {
-			go worker(url, jobs, results, thunk)
-		}
-		playno = 0
-		for {
-			var cstart uint64 = start + uint64(playno)*uint64(thunk)
-			var cend uint64 = cstart + uint64(thunk)
-			if end > 0 {
-				if cstart >= end {
-					break
-				}
-				if cend >= end {
-					cend = end
-				}
-			} else if thread == 1 && playno > 0 { // 文件大小未知,又不支持断点续传(不支持断点续传,thread应设置为1),不分块下载(最多只能下载一个thunk)
-				break
-			} else { // 文件大小未知,但是支持断点续传(在调用方设置thread大于1),设置最大下载8192个thunk
-				if playno >= 8192 {
-					break
-				}
-			}
-			jobs <- Jobs{playno: playno, start: cstart, end: cend}
-			playno++
-		}
-
-		var current uint32 = 0
-		var played uint32 = 0
-
-		var downloaded uint64 = 0
-		stat, _ := os.Stat(saveas)
-		var currpos int64 = stat.Size()
-		if currpos > 0 {
-			stdjobs <- Stdjob{start: 0, size: currpos}
-		}
-		for ; current < playno; current++ {
-			res := <-results
-			tasks[res.playno] = res
-			func() {
-				for {
-					var currentRes Results
-					if resource, ok := tasks[played]; ok {
-						if resource.tmpfile != nil {
-							downloaded = downloaded + uint64(resource.bits)
-							bits, err := io.Copy(file, resource.tmpfile)
-							if err != nil {
-								panic(err)
-							}
-							resource.tmpfile.Close()
-							os.Remove(resource.tmpfile.Name())
-							if stdout {
-								stdjobs <- Stdjob{start: currpos, size: bits}
-							}
-							currpos = currpos + bits
-						}
-						// fmt.Println("Key Found", played)
-						played++
-						currentRes = resource
-					} else {
-						// fmt.Println("Key Not Found", played)
-						break
-					}
-					endTime := time.Since(startTime).Seconds()
-					speed := float64(downloaded/1024) / endTime
-					if end <= 0 {
-						end = 1048576 * 1024 // 文件大小未知,假定为1G,这里只是按1G去显示进度条,实际可下载8192个thunk
-					}
-					percent := int((float64(currentRes.end) / float64(end)) * 100)
-					leftTime := (float64(end-start)/1024)/speed - endTime
-					if !stdout {
-						fmt.Printf("\r%s%d%% %s %.2fKB/s %.1fs  %.1fs  %s    ", Bar(percent, 25), percent, ByteFormat(currentRes.end), speed, endTime, leftTime, BoolString(percent > 5, "★", "☆"))
-					}
-					if f != nil {
-						f(percent, downloaded)
-					}
-				}
-			}()
-		}
-	} else {
-		return err
+		runtime.GC()
+		debug.FreeOSMemory()
+		return n, err
 	}
+	for {
+		task := <-f.tasks
+		f.dataMap[task.playno] = task
+		f.log(fmt.Sprintf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len()))
+		if _, ok := f.dataMap[f.played]; ok {
+			return 0, nil
+		}
+		f.log(fmt.Sprintf("%s : waiting for part %d", f.url, f.played))
+	}
+}
+
+//Close clean work
+func (f *Fastloader) Close() error {
+	f.tasks = make(chan loadertask, 64)
+	f.bytesgot = make(chan int64, 8)
+	f.jobs = make(chan loaderjob, 64)
+	f.dataMap = make(map[int32]loadertask)
 	return nil
 }
 
-func worker(url string, jobs <-chan Jobs, results chan<- Results, thunk uint32) {
-	for job := range jobs {
-		// fmt.Println(job)
-		if tfile, err := ioutil.TempFile("", "disk"+strconv.Itoa(int(job.playno))+"-"); err == nil {
-			tmpfile, bits := startChunkLoad(url, tfile, job.start, job.end, job.playno, thunk)
-			results <- Results{playno: job.playno, start: job.start, end: job.end, bits: bits, tmpfile: tmpfile}
-		} else {
-			panic(err)
-		}
+func (f *Fastloader) log(args ...interface{}) {
+	if f.debug {
+		log.Println(args...)
 	}
 }
 
-func stdoutWorker(filePath string, stdjobs <-chan Stdjob) {
-	if file, err := os.OpenFile(filePath, os.O_RDONLY, 0777); err == nil {
-		for job := range stdjobs {
-			file.Seek(job.start, 0)
-			if _, err = io.CopyN(os.Stdout, file, job.size); err != nil {
-				panic(err)
-			}
-		}
-		file.Close()
+func newClient(url string, reqHeader http.Header, extraHeader http.Header, timeout int64) (*http.Response, error) {
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	req, err := newRequest(url, reqHeader, extraHeader)
+	if err != nil {
+		return nil, err
 	}
+	return client.Do(req)
 }
 
-func startChunkLoad(url string, tfile *os.File, start uint64, end uint64, playno uint32, thunk uint32) (*os.File, uint32) {
-	client := &http.Client{Timeout: time.Duration(thunk/1024/4) * time.Second}
-	if req, err := http.NewRequest("GET", url, nil); err == nil {
-		lastLoad, _ := GetContinue(tfile.Name())
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start+lastLoad, end-1))
-		if res, err := client.Do(reqWithHeader(req)); err == nil {
-			defer res.Body.Close()
-			if res.StatusCode == 416 {
-				return tfile, 0
-			} else if (res.StatusCode >= 200) && (res.StatusCode <= 209) {
-				if bits, err := io.Copy(tfile, res.Body); err == nil {
-					tfile.Seek(0, 0)
-					return tfile, uint32(bits)
-				} else {
-					debug(fmt.Sprintf("\n%s:Error when io copy,Try again\n", err))
-					time.Sleep(time.Second)
-					return startChunkLoad(url, tfile, start, end, playno, thunk)
-				}
-			} else {
-				debug(fmt.Sprintf("\nDownload error : %s , Try again\n", res.Status))
-				time.Sleep(time.Second * 3)
-				return startChunkLoad(url, tfile, start, end, playno, thunk)
-			}
-		} else {
-			debug(fmt.Sprintf("\n%s:Error when do request,Try again\n", err))
-			time.Sleep(time.Second)
-			return startChunkLoad(url, tfile, start, end, playno, thunk)
-		}
-	} else {
-		debug(fmt.Sprintf("\n%s:Error when init request", err))
-		panic(err)
+func newRequest(url string, reqHeader http.Header, extraHeader http.Header) (*http.Request, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return req, err
 	}
+	return reqWithHeader(req, reqHeader, extraHeader), nil
 }
 
-func CopyToStdOut(filePath string) {
-	if file, err := os.OpenFile(filePath, os.O_RDONLY, 0777); err == nil {
-		io.Copy(os.Stdout, file)
-		file.Close()
-	}
-}
-
-func GetContinue(saveas string) (uint64, error) {
-	var fileSize uint64 = 0
-	if stat, err := os.Stat(saveas); os.IsNotExist(err) {
-		f, err := os.Create(saveas)
-		if err != nil {
-			if os.IsPermission(err) {
-				return 0, fmt.Errorf("%s:GetContinue IsPermission Error", err)
-			} else {
-				return 0, err
-			}
-		}
-		f.Close()
-	} else {
-		fileSize = uint64(stat.Size())
-	}
-	return fileSize, nil
-}
-
-func GetStorePath(url string) (string, string) {
-	urlName := path.Base(url)
-	urlNameArr := strings.Split(urlName, "?")
-	urlName = urlNameArr[0]
-	dir, _ := os.Getwd()
-	filePath := filepath.Join(dir, urlName)
-	return urlName, filePath
-}
-
-func GetUrlInfo(url string, useGet bool) (uint64, bool, error) {
-	var sourceSize uint64 = 0
-	client := &http.Client{Timeout: 15 * time.Second}
-	if req, err := http.NewRequest(BoolString(useGet, "GET", "HEAD"), url, nil); err == nil {
-		if response, err := client.Do(reqWithHeader(req)); err == nil {
-			if response.StatusCode != http.StatusOK {
-				return sourceSize, false, fmt.Errorf("Server return non-200 status: %s\n", response.Status)
-			}
-			length, _ := strconv.ParseUint(response.Header.Get("Content-Length"), 10, 64)
-			var rangeAble bool = response.Header.Get("Accept-Ranges") == "bytes"
-			sourceSize = length
-			return sourceSize, rangeAble, nil
-		} else {
-			return sourceSize, false, fmt.Errorf("Error while get url info %s : %s", url, err)
-		}
-	} else {
-		return sourceSize, false, fmt.Errorf("Error while init url request %s : %s", url, err)
-	}
-}
-
-func reqWithHeader(req *http.Request) *http.Request {
+func reqWithHeader(req *http.Request, reqHeader http.Header, extraHeader http.Header) *http.Request {
 	for key, value := range reqHeader {
-		req.Header.Add(key, value)
+		for _, item := range value {
+			req.Header.Set(key, item)
+		}
+	}
+	for key, value := range extraHeader {
+		for _, item := range value {
+			req.Header.Set(key, item)
+		}
 	}
 	return req
 }
 
-func SetHeader(header map[string]string) {
-	reqHeader = header
+func respOk(resp *http.Response) bool {
+	if resp.StatusCode >= 200 && resp.StatusCode <= 209 {
+		return true
+	}
+	return false
 }
 
-func Bar(vl int, width int) string {
-	var loaded int = vl / (100 / width)
-	var remain int = width - loaded
-	if remain < 0 {
-		remain = 0
+func respEnd(resp *http.Response) bool {
+	if resp.StatusCode == 416 {
+		return true
 	}
-	return fmt.Sprintf("%s %s", strings.Repeat("█", loaded), strings.Repeat(" ", remain))
+	return false
 }
 
-func BoolString(b bool, s, s1 string) string {
-	if b {
-		return s
-	}
-	return s1
+//Get does
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, bool, error) {
+	return NewLoader(url, 2, 1048576, progress, false).Load(start, end)
 }
 
-func ByteFormat(bytes uint64) string {
-	unit := [...]string{"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"}
-	if bytes >= 1024 {
-		e := math.Floor(math.Log(float64(bytes)) / math.Log(float64(1024)))
-		return fmt.Sprintf("%.2f%s", float64(bytes)/math.Pow(1024, math.Floor(e)), unit[int(e)])
+//NewLoader ...
+func NewLoader(url string, thread int32, thunk int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), debug bool) *Fastloader {
+	loader := &Fastloader{
+		url:      url,
+		thread:   thread,
+		thunk:    thunk,
+		progress: progress,
+		debug:    debug,
 	}
-	return fmt.Sprintf("%d%s", bytes, unit[0])
+	loader.Close()
+	return loader
+}
+
+//Load return reader
+func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, error) {
+	f.startTime = time.Now()
+	resp, err := f.loadItem(start, end)
+	if err != nil {
+		return nil, -1, false, err
+	}
+	if resp.ContentLength > 0 {
+		f.total = resp.ContentLength
+	}
+	if f.total > f.thunk && resp.StatusCode == 206 && resp.ProtoAtLeast(1, 1) {
+		f.start = start
+		if end > f.total+f.start || end <= 0 {
+			end = f.total + f.start
+		}
+		f.end = end
+		if f.progress != nil {
+			go func() {
+				lastrun := time.Now()
+				for {
+					n := <-f.bytesgot
+					f.loaded = f.loaded + n
+					timenow := time.Now()
+					full := f.start+f.loaded >= f.end
+					if full || timenow.Sub(lastrun).Seconds() > 1 {
+						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+						lastrun = timenow
+					}
+					if full {
+						return
+					}
+				}
+			}()
+		}
+		var playno = f.current
+		go func() {
+			data, err := f.getItem(resp, 0, f.thunk, playno)
+			f.tasks <- loadertask{data: data, playno: playno, err: err}
+		}()
+		f.current++
+		go func() {
+			for i := int32(0); i < f.thread; i++ {
+				go f.worker()
+			}
+			for {
+				curr := int64(f.current)
+				cstart := curr*f.thunk + f.start
+				cend := cstart + f.thunk
+				if cend >= f.end {
+					cend = f.end
+					f.endno = f.current
+				}
+				f.jobs <- loaderjob{start: cstart, end: cend, playno: f.current}
+				if f.endno > 0 {
+					close(f.jobs)
+					break
+				} else {
+					f.current++
+				}
+			}
+		}()
+		return f, f.total, true, nil
+	}
+	return resp.Body, resp.ContentLength, false, nil
+}
+
+func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
+	var extraHeader = http.Header{}
+	var timeout int64
+	if end > start && start >= 0 {
+		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
+		timeout = (end - start) / 1024 / 4
+	} else if start == 0 && end == 0 {
+		extraHeader.Set("Range", "bytes=0-")
+		timeout = 86400
+	} else if end == 0 && start > 0 {
+		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		timeout = 3600
+	} else {
+		return nil, fmt.Errorf("%s : bad range arguements %d-%d ", f.url, start, end)
+	}
+	if timeout < 60 {
+		timeout = 60
+	}
+	resp, err := newClient(f.url, f.reqHeader, extraHeader, timeout)
+	if err != nil {
+		return resp, err
+	}
+	if respOk(resp) {
+		return resp, nil
+	} else if respEnd(resp) {
+		return resp, io.EOF
+	} else {
+		return resp, fmt.Errorf("%s : %s", f.url, resp.Status)
+	}
+}
+
+func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (bytes.Buffer, error) {
+	var (
+		data      bytes.Buffer
+		bufsize   = 524288
+		oncesize  = 262144
+		trytimes  uint8
+		maxtimes  uint8 = 5
+		r         *bufio.Reader
+		rangesize = end - start
+		cstart    = start
+	)
+	if rangesize > 0 {
+		r = bufio.NewReaderSize(io.LimitReader(resp.Body, rangesize), bufsize)
+	} else {
+		r = bufio.NewReaderSize(resp.Body, bufsize)
+	}
+	buf := make([]byte, oncesize)
+	for {
+		n, err := io.ReadFull(r, buf)
+		bytesgot := int64(n)
+		if err == nil {
+			data.Write(buf)
+			time.Sleep(time.Second)
+			if f.progress != nil {
+				f.bytesgot <- bytesgot
+			}
+			f.log(fmt.Sprintf("%s : part %d http received %d bytes", f.url, playno, n))
+		} else if err == io.EOF {
+			resp.Body.Close()
+			return data, nil
+		} else if err == io.ErrUnexpectedEOF {
+			data.Write(buf[0:n])
+			time.Sleep(time.Second)
+			if f.progress != nil {
+				f.bytesgot <- bytesgot
+			}
+			f.log(fmt.Sprintf("%s : part %d http received %d bytes", f.url, playno, n))
+		} else {
+			resp.Body.Close()
+			trytimes = trytimes + 1
+			msg := fmt.Sprintf("%s : part %d read error after %d times %s", f.url, playno, trytimes, err)
+			if trytimes > maxtimes {
+				return data, fmt.Errorf(msg)
+			}
+			f.log(msg)
+			time.Sleep(time.Second)
+			cstart = cstart + int64(data.Len())
+			resp, err = f.loadItem(cstart, end)
+			if err != nil {
+				return data, err
+			}
+			rangesize = end - cstart
+			if rangesize > 0 {
+				r = bufio.NewReaderSize(io.LimitReader(resp.Body, rangesize), bufsize)
+			} else {
+				r = bufio.NewReaderSize(resp.Body, bufsize)
+			}
+		}
+	}
+}
+
+func (f *Fastloader) worker() {
+	for {
+		job, more := <-f.jobs
+		if more {
+			resp, err := f.loadItem(job.start, job.end)
+			if err != nil {
+				f.tasks <- loadertask{err: err, playno: job.playno}
+			} else {
+				data, err := f.getItem(resp, job.start, job.end, job.playno)
+				f.tasks <- loadertask{data: data, playno: job.playno, err: err}
+			}
+		} else {
+			return
+		}
+	}
 }
