@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"runtime"
 	"runtime/debug"
@@ -53,11 +54,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 	if resource, ok := f.dataMap[f.played]; ok {
 		delete(f.dataMap, f.played) // free memory
-		if resource.err != nil {
-			return 0, resource.err
-		}
 		n, err := resource.data.Read(p)
 		f.readed = f.readed + int64(n)
+		if n == 0 && resource.err != nil {
+			return 0, resource.err
+		}
 		if resource.data.Len() == 0 {
 			if f.played > 0 && f.played == f.endno {
 				if f.progress != nil {
@@ -66,7 +67,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 				f.Close()
 				return n, io.EOF
 			}
-			f.played++
+			if resource.err == nil {
+				f.played++
+			} else {
+				f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
+			}
 		} else {
 			f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 		}
@@ -77,7 +82,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	for {
 		task := <-f.tasks
 		f.dataMap[task.playno] = task
-		f.log(fmt.Sprintf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len()))
+		if task.err != nil {
+			f.log(fmt.Sprintf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, task.data.Len(), task.err))
+		} else {
+			f.log(fmt.Sprintf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len()))
+		}
 		if _, ok := f.dataMap[f.played]; ok {
 			return 0, nil
 		}
@@ -199,7 +208,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, e
 		}
 		var playno = f.current
 		go func() {
-			data, err := f.getItem(resp, 0, f.thunk, playno)
+			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno)
 			f.tasks <- loadertask{data: data, playno: playno, err: err}
 		}()
 		f.current++
@@ -269,7 +278,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		maxtimes  uint8 = 5
 		r         *bufio.Reader
 		rangesize = end - start
-		cstart    = start
+		cstart    int64
 	)
 	if rangesize > 0 {
 		r = bufio.NewReaderSize(io.LimitReader(resp.Body, rangesize), bufsize)
@@ -282,31 +291,36 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		bytesgot := int64(n)
 		if err == nil {
 			data.Write(buf)
-			time.Sleep(time.Second)
 			if f.progress != nil {
 				f.bytesgot <- bytesgot
 			}
-			f.log(fmt.Sprintf("%s : part %d http received %d bytes", f.url, playno, n))
+			f.log(fmt.Sprintf("%s : part %d http received %d bytes full", f.url, playno, n))
 		} else if err == io.EOF {
 			resp.Body.Close()
 			return data, nil
-		} else if err == io.ErrUnexpectedEOF {
+		} else if err == io.ErrUnexpectedEOF && n > 0 {
 			data.Write(buf[0:n])
-			time.Sleep(time.Second)
 			if f.progress != nil {
 				f.bytesgot <- bytesgot
 			}
-			f.log(fmt.Sprintf("%s : part %d http received %d bytes", f.url, playno, n))
+			f.log(fmt.Sprintf("%s : part %d http received %d bytes not full", f.url, playno, n))
 		} else {
 			resp.Body.Close()
+			var msg string
 			trytimes = trytimes + 1
-			msg := fmt.Sprintf("%s : part %d read error after %d times %s", f.url, playno, trytimes, err)
-			if trytimes > maxtimes {
-				return data, fmt.Errorf(msg)
+			if err, ok := err.(net.Error); ok && err.Timeout() {
+				msg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
+			} else if err == io.ErrUnexpectedEOF && n == 0 {
+				msg = fmt.Sprintf("%s : part %d server closed error after %d times %s", f.url, playno, trytimes, err)
+			} else {
+				msg = fmt.Sprintf("%s : part %d unknow error after %d times %s", f.url, playno, trytimes, err)
 			}
 			f.log(msg)
+			if trytimes > maxtimes {
+				return data, err
+			}
 			time.Sleep(time.Second)
-			cstart = cstart + int64(data.Len())
+			cstart = start + int64(data.Len())
 			resp, err = f.loadItem(cstart, end)
 			if err != nil {
 				return data, err
