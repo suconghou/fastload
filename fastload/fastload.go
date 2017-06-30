@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -24,7 +25,7 @@ type Fastloader struct {
 	start     int64
 	end       int64
 	reqHeader http.Header
-	debug     bool
+	logger    *log.Logger
 	current   int32
 	played    int32
 	endno     int32
@@ -83,14 +84,14 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		task := <-f.tasks
 		f.dataMap[task.playno] = task
 		if task.err != nil {
-			f.log(fmt.Sprintf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, task.data.Len(), task.err))
+			f.logger.Printf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, task.data.Len(), task.err)
 		} else {
-			f.log(fmt.Sprintf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len()))
+			f.logger.Printf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len())
 		}
 		if _, ok := f.dataMap[f.played]; ok {
 			return 0, nil
 		}
-		f.log(fmt.Sprintf("%s : waiting for part %d", f.url, f.played))
+		f.logger.Printf("%s : waiting for part %d", f.url, f.played)
 	}
 }
 
@@ -101,12 +102,6 @@ func (f *Fastloader) Close() error {
 	f.jobs = make(chan loaderjob, 64)
 	f.dataMap = make(map[int32]loadertask)
 	return nil
-}
-
-func (f *Fastloader) log(args ...interface{}) {
-	if f.debug {
-		log.Println(args...)
-	}
 }
 
 func newClient(url string, reqHeader http.Header, extraHeader http.Header, timeout int64) (*http.Response, error) {
@@ -156,17 +151,23 @@ func respEnd(resp *http.Response) bool {
 
 //Get does
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, bool, error) {
-	return NewLoader(url, 2, 1048576, progress, false).Load(start, end)
+	reqHeader := http.Header{}
+	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
+	return NewLoader(url, 2, 1048576, reqHeader, progress, nil).Load(start, end)
 }
 
 //NewLoader ...
-func NewLoader(url string, thread int32, thunk int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), debug bool) *Fastloader {
+func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), out io.Writer) *Fastloader {
+	if out == nil {
+		out = ioutil.Discard
+	}
 	loader := &Fastloader{
-		url:      url,
-		thread:   thread,
-		thunk:    thunk,
-		progress: progress,
-		debug:    debug,
+		url:       url,
+		thread:    thread,
+		thunk:     thunk,
+		progress:  progress,
+		reqHeader: reqHeader,
+		logger:    log.New(out, "", log.Lshortfile|log.LstdFlags),
 	}
 	loader.Close()
 	return loader
@@ -294,7 +295,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.progress != nil {
 				f.bytesgot <- bytesgot
 			}
-			f.log(fmt.Sprintf("%s : part %d http received %d bytes full", f.url, playno, n))
+			f.logger.Printf("%s : part %d http received %d bytes full", f.url, playno, n)
 		} else if err == io.EOF {
 			resp.Body.Close()
 			return data, nil
@@ -303,7 +304,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.progress != nil {
 				f.bytesgot <- bytesgot
 			}
-			f.log(fmt.Sprintf("%s : part %d http received %d bytes not full", f.url, playno, n))
+			f.logger.Printf("%s : part %d http received %d bytes not full", f.url, playno, n)
 		} else {
 			resp.Body.Close()
 			var msg string
@@ -315,7 +316,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			} else {
 				msg = fmt.Sprintf("%s : part %d unknow error after %d times %s", f.url, playno, trytimes, err)
 			}
-			f.log(msg)
+			f.logger.Printf(msg)
 			if trytimes > maxtimes {
 				return data, err
 			}
