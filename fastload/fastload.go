@@ -9,10 +9,17 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"time"
 )
+
+const bufsize = 524288
+const oncesize = 262144
+
+var rangeHeaderExp = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
 
 // Fastloader instance
 type Fastloader struct {
@@ -175,6 +182,7 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 
 //Load return reader
 func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, error) {
+	start, end = f.fixstartend(start, end)
 	f.startTime = time.Now()
 	resp, err := f.loadItem(start, end)
 	if err != nil {
@@ -239,6 +247,34 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, e
 	return resp.Body, resp.ContentLength, false, nil
 }
 
+func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
+	rangeStr := f.reqHeader.Get("Range")
+	if rangeHeaderExp.MatchString(rangeStr) {
+		var (
+			fstart int64
+			fend   int64
+		)
+		matches := rangeHeaderExp.FindStringSubmatch(rangeStr)
+		fstart, err := strconv.ParseInt(matches[1], 10, 64)
+		if err != nil {
+			f.logger.Printf("%s: read range header error %s", f.url, err)
+			return start, end
+		}
+		if matches[2] != "" {
+			fend, err = strconv.ParseInt(matches[2], 10, 64)
+			if err != nil {
+				f.logger.Printf("%s: read range header error %s", f.url, err)
+				return start, end
+			}
+			fend = fend + 1
+		} else {
+			fend = 0
+		}
+		return fstart, fend
+	}
+	return start, end
+}
+
 func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 	var extraHeader = http.Header{}
 	var timeout int64
@@ -273,8 +309,6 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (bytes.Buffer, error) {
 	var (
 		data      bytes.Buffer
-		bufsize   = 524288
-		oncesize  = 262144
 		trytimes  uint8
 		maxtimes  uint8 = 5
 		r         *bufio.Reader
