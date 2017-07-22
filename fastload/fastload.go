@@ -9,17 +9,18 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
-	"runtime"
-	"runtime/debug"
 	"strconv"
 	"time"
 )
 
-const bufsize = 524288
-const oncesize = 262144
+const (
+	bufsize  = 524288
+	oncesize = 262144
+)
 
-var rangeHeaderExp = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+var rangexp = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
 
 // Fastloader instance
 type Fastloader struct {
@@ -83,8 +84,6 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		} else {
 			f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 		}
-		runtime.GC()
-		debug.FreeOSMemory()
 		return n, err
 	}
 	for {
@@ -157,10 +156,10 @@ func respEnd(resp *http.Response) bool {
 }
 
 //Get does
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, bool, error) {
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
-	return NewLoader(url, 2, 1048576, reqHeader, progress, nil).Load(start, end)
+	return NewLoader(url, 4, 1048576, reqHeader, progress, os.Stderr).Load(start, end)
 }
 
 //NewLoader ...
@@ -181,12 +180,12 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 }
 
 //Load return reader
-func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, error) {
+func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int32, error) {
 	start, end = f.fixstartend(start, end)
 	f.startTime = time.Now()
 	resp, err := f.loadItem(start, end)
 	if err != nil {
-		return nil, -1, false, err
+		return nil, 0, 0, err
 	}
 	if resp.ContentLength > 0 {
 		f.total = resp.ContentLength
@@ -242,19 +241,19 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, bool, e
 				}
 			}
 		}()
-		return f, f.total, true, nil
+		return f, f.total, f.thread, nil
 	}
-	return resp.Body, resp.ContentLength, false, nil
+	return resp.Body, resp.ContentLength, 1, nil
 }
 
 func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 	rangeStr := f.reqHeader.Get("Range")
-	if rangeHeaderExp.MatchString(rangeStr) {
+	if rangexp.MatchString(rangeStr) {
 		var (
 			fstart int64
 			fend   int64
 		)
-		matches := rangeHeaderExp.FindStringSubmatch(rangeStr)
+		matches := rangexp.FindStringSubmatch(rangeStr)
 		fstart, err := strconv.ParseInt(matches[1], 10, 64)
 		if err != nil {
 			f.logger.Printf("%s: read range header error %s", f.url, err)

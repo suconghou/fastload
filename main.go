@@ -1,12 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path"
 	"runtime"
-
-	"fmt"
 
 	"time"
 
@@ -37,7 +36,7 @@ func wget(url string, saveas string) {
 	if err != nil {
 		os.Stderr.WriteString(fmt.Sprintf("%s : %s", url, err))
 	}
-	resp, total, thread, err := fastload.Get(url, start, 0, utilgo.ProgressBar(path.Base(file.Name())+" ", ""))
+	resp, total, thread, err := fastload.Get(url, start, 0, utilgo.ProgressBar(path.Base(file.Name())+" ", " "))
 	if err != nil {
 		if err == io.EOF {
 			os.Stderr.WriteString(fmt.Sprintf("%s : already done", url))
@@ -49,7 +48,7 @@ func wget(url string, saveas string) {
 		if err != nil {
 			os.Stderr.WriteString(fmt.Sprintf("%s : %s", url, err))
 		} else {
-			os.Stdout.WriteString(fmt.Sprintf("\r\n%s : download ok use thread %v size %d/%d \r\n", url, thread, n, total))
+			os.Stdout.WriteString(fmt.Sprintf("\r\n%s : download ok use thread %d size %d/%d \r\n", url, thread, n, total))
 		}
 		file.Close()
 	}
