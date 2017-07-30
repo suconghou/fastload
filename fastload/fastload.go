@@ -57,6 +57,31 @@ type loaderjob struct {
 	end    int64
 }
 
+type writeCounter struct {
+	instance *Fastloader
+	readed   int64
+	origin   io.ReadCloser
+	lastrun  time.Time
+}
+
+func (wc *writeCounter) Read(p []byte) (int, error) {
+	n, err := wc.origin.Read(p)
+	if err != nil {
+		return n, err
+	}
+	wc.readed += int64(n)
+	timenow := time.Now()
+	if wc.readed == wc.instance.total || timenow.Sub(wc.lastrun).Seconds() > 1 {
+		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
+		wc.lastrun = timenow
+	}
+	return n, err
+}
+
+func (wc *writeCounter) Close() error {
+	return wc.origin.Close()
+}
+
 func (f *Fastloader) Read(p []byte) (int, error) {
 	if f.readed == f.total {
 		return 0, io.EOF
@@ -243,7 +268,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int32, 
 		}()
 		return f, f.total, f.thread, nil
 	}
-	return resp.Body, resp.ContentLength, 1, nil
+	return &writeCounter{instance: f, origin: resp.Body}, resp.ContentLength, 1, nil
 }
 
 func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
