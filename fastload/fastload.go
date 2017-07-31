@@ -40,6 +40,7 @@ type Fastloader struct {
 	dataMap   map[int32]loadertask
 	startTime time.Time
 	bytesgot  chan int64
+	transport *http.Transport
 	progress  func(received int64, readed int64, total int64, duration float64, start int64, end int64)
 }
 
@@ -133,8 +134,13 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-func newClient(url string, reqHeader http.Header, extraHeader http.Header, timeout int64) (*http.Response, error) {
-	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+func newClient(url string, reqHeader http.Header, extraHeader http.Header, timeout int64, transport *http.Transport) (*http.Response, error) {
+	var client *http.Client
+	if transport != nil {
+		client = &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
+	} else {
+		client = &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	}
 	req, err := newRequest(url, reqHeader, extraHeader)
 	if err != nil {
 		return nil, err
@@ -182,11 +188,11 @@ func respEnd(resp *http.Response) bool {
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
-	return NewLoader(url, 4, 1048576, reqHeader, progress, os.Stderr).Load(start, end)
+	return NewLoader(url, 4, 1048576, reqHeader, progress, nil, os.Stderr).Load(start, end)
 }
 
 //NewLoader ...
-func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), out io.Writer) *Fastloader {
+func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), transport *http.Transport, out io.Writer) *Fastloader {
 	if out == nil {
 		out = ioutil.Discard
 	}
@@ -196,6 +202,7 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 		thunk:     thunk,
 		progress:  progress,
 		reqHeader: reqHeader,
+		transport: transport,
 		logger:    log.New(out, "", log.Lshortfile|log.LstdFlags),
 	}
 	loader.Close()
@@ -320,7 +327,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 	if timeout < 60 {
 		timeout = 60
 	}
-	resp, err := newClient(f.url, f.reqHeader, extraHeader, timeout)
+	resp, err := newClient(f.url, f.reqHeader, extraHeader, timeout, f.transport)
 	if err != nil {
 		return resp, err
 	}
