@@ -1,7 +1,6 @@
 package fastload
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -13,11 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"time"
-)
-
-const (
-	bufsize  = 524288
-	oncesize = 262144
 )
 
 var rangexp = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
@@ -335,61 +329,53 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		data      bytes.Buffer
 		trytimes  uint8
 		maxtimes  uint8 = 5
-		r         *bufio.Reader
-		rangesize = end - start
+		rangesize       = end - start
 		cstart    int64
+		errmsg    string
 	)
-	if rangesize > 0 {
-		r = bufio.NewReaderSize(io.LimitReader(resp.Body, rangesize), bufsize)
-	} else {
-		r = bufio.NewReaderSize(resp.Body, bufsize)
-	}
-	buf := make([]byte, oncesize)
+	defer resp.Body.Close()
+	f.logger.Printf("%s : part %d http range size %d", f.url, playno, rangesize)
+	buf := make([]byte, 262144)
 	for {
-		n, err := io.ReadFull(r, buf)
-		bytesgot := int64(n)
-		if err == nil {
-			data.Write(buf)
-			if f.progress != nil {
-				f.bytesgot <- bytesgot
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if playno == 0 && int64(data.Len()+n) >= rangesize {
+				n = int(rangesize) - data.Len()
+				data.Write(buf[0:n])
+				if f.progress != nil {
+					f.bytesgot <- int64(n)
+				}
+				return data, nil
 			}
-			f.logger.Printf("%s : part %d http received %d bytes full", f.url, playno, n)
-		} else if err == io.EOF {
-			resp.Body.Close()
-			return data, nil
-		} else if err == io.ErrUnexpectedEOF && n > 0 {
 			data.Write(buf[0:n])
 			if f.progress != nil {
-				f.bytesgot <- bytesgot
+				f.bytesgot <- int64(n)
 			}
-			f.logger.Printf("%s : part %d http received %d bytes not full", f.url, playno, n)
+		}
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			return data, nil
+		}
+		// some error happened
+		trytimes = trytimes + 1
+		if err, ok := err.(net.Error); ok && err.Timeout() {
+			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
+		} else if err == io.ErrUnexpectedEOF {
+			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", f.url, playno, trytimes, err)
 		} else {
-			resp.Body.Close()
-			var msg string
-			trytimes = trytimes + 1
-			if err, ok := err.(net.Error); ok && err.Timeout() {
-				msg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
-			} else if err == io.ErrUnexpectedEOF && n == 0 {
-				msg = fmt.Sprintf("%s : part %d server closed error after %d times %s", f.url, playno, trytimes, err)
-			} else {
-				msg = fmt.Sprintf("%s : part %d unknow error after %d times %s", f.url, playno, trytimes, err)
-			}
-			f.logger.Printf(msg)
-			if trytimes > maxtimes {
-				return data, err
-			}
-			time.Sleep(time.Second)
-			cstart = start + int64(data.Len())
-			resp, err = f.loadItem(cstart, end)
-			if err != nil {
-				return data, err
-			}
-			rangesize = end - cstart
-			if rangesize > 0 {
-				r = bufio.NewReaderSize(io.LimitReader(resp.Body, rangesize), bufsize)
-			} else {
-				r = bufio.NewReaderSize(resp.Body, bufsize)
-			}
+			errmsg = fmt.Sprintf("%s : part %d unknow error after %d times %s", f.url, playno, trytimes, err)
+		}
+		f.logger.Printf(errmsg)
+		if trytimes > maxtimes {
+			return data, err
+		}
+		time.Sleep(time.Second)
+		cstart = start + int64(data.Len())
+		resp, err = f.loadItem(cstart, end)
+		if err != nil {
+			return data, err
 		}
 	}
 }

@@ -36,7 +36,7 @@ func wget(url string, saveas string) {
 	if err != nil {
 		os.Stderr.WriteString(fmt.Sprintf("%s : %s", url, err))
 	}
-	resp, total, thread, err := fastload.Get(url, start, 0, utilgo.ProgressBar(path.Base(file.Name())+" ", " "))
+	resp, total, thread, err := fastload.Get(url, start, 0, utilgo.ProgressBar(path.Base(file.Name())+" ", " ", nil, nil))
 	if err != nil {
 		if err == io.EOF {
 			os.Stderr.WriteString(fmt.Sprintf("%s : already done", url))
