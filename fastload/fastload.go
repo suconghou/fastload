@@ -14,14 +14,18 @@ import (
 	"time"
 )
 
-var rangexp = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+var (
+	rangexp   = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+	rangefile = regexp.MustCompile(`\d+/(\d+)`)
+)
 
 // Fastloader instance
 type Fastloader struct {
 	url       string
 	thunk     int64
 	thread    int32
-	total     int64
+	total     int64 // 要求下载的大小 range
+	filesize  int64 // 文件的真实大小 根据206 header 匹配
 	loaded    int64
 	readed    int64
 	start     int64
@@ -175,7 +179,7 @@ func respEnd(resp *http.Response) bool {
 }
 
 //Get does
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, int32, error) {
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
 	return NewLoader(url, 4, 1048576, reqHeader, progress, os.Stderr).Load(start, end)
@@ -198,18 +202,23 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 	return loader
 }
 
-//Load return reader
-func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int32, error) {
+//Load return reader , resp , rangesize , total , thread , error
+func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, int32, error) {
 	start, end = f.fixstartend(start, end)
 	f.startTime = time.Now()
 	resp, err := f.loadItem(start, end)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, 0, err
 	}
 	if resp.ContentLength > 0 {
 		f.total = resp.ContentLength
 	}
 	if f.total > f.thunk && resp.StatusCode == 206 && resp.ProtoAtLeast(1, 1) {
+		cr := resp.Header.Get("Content-Range")
+		if rangefile.MatchString(cr) {
+			matches := rangefile.FindStringSubmatch(cr)
+			f.filesize, _ = strconv.ParseInt(matches[1], 10, 64)
+		}
 		f.start = start
 		if end > f.total+f.start || end <= 0 {
 			end = f.total + f.start
@@ -260,9 +269,9 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int32, 
 				}
 			}
 		}()
-		return f, f.total, f.thread, nil
+		return f, f.total, f.filesize, f.thread, nil
 	}
-	return &writeCounter{instance: f, origin: resp.Body}, resp.ContentLength, 1, nil
+	return &writeCounter{instance: f, origin: resp.Body}, resp.ContentLength, resp.ContentLength, 1, nil
 }
 
 func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
