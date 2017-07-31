@@ -134,22 +134,22 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-func newClient(url string, reqHeader http.Header, extraHeader http.Header, timeout int64, transport *http.Transport) (*http.Response, error) {
+func newClient(url string, method string, reqHeader http.Header, extraHeader http.Header, timeout int64, transport *http.Transport) (*http.Response, error) {
 	var client *http.Client
 	if transport != nil {
 		client = &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
 	} else {
 		client = &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	}
-	req, err := newRequest(url, reqHeader, extraHeader)
+	req, err := newRequest(url, method, reqHeader, extraHeader)
 	if err != nil {
 		return nil, err
 	}
 	return client.Do(req)
 }
 
-func newRequest(url string, reqHeader http.Header, extraHeader http.Header) (*http.Request, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func newRequest(url string, method string, reqHeader http.Header, extraHeader http.Header) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return req, err
 	}
@@ -327,7 +327,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 	if timeout < 60 {
 		timeout = 60
 	}
-	resp, err := newClient(f.url, f.reqHeader, extraHeader, timeout, f.transport)
+	resp, err := newClient(f.url, "GET", f.reqHeader, extraHeader, timeout, f.transport)
 	if err != nil {
 		return resp, err
 	}
