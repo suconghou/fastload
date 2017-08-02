@@ -35,9 +35,9 @@ type Fastloader struct {
 	current   int32
 	played    int32
 	endno     int32
-	tasks     chan loadertask
-	jobs      chan loaderjob
-	dataMap   map[int32]loadertask
+	tasks     chan *loadertask
+	jobs      chan *loaderjob
+	dataMap   map[int32]*loadertask
 	startTime time.Time
 	bytesgot  chan int64
 	transport *http.Transport
@@ -45,7 +45,7 @@ type Fastloader struct {
 }
 
 type loadertask struct {
-	data   bytes.Buffer
+	data   *bytes.Buffer
 	playno int32
 	err    error
 }
@@ -103,10 +103,10 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 			if resource.err == nil {
 				f.played++
 			} else {
-				f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
+				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
 		} else {
-			f.dataMap[f.played] = loadertask{data: resource.data, playno: resource.playno, err: resource.err}
+			f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 		}
 		return n, err
 	}
@@ -127,10 +127,10 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 
 //Close clean work
 func (f *Fastloader) Close() error {
-	f.tasks = make(chan loadertask, 64)
+	f.tasks = make(chan *loadertask, 64)
 	f.bytesgot = make(chan int64, 8)
-	f.jobs = make(chan loaderjob, 64)
-	f.dataMap = make(map[int32]loadertask)
+	f.jobs = make(chan *loaderjob, 64)
+	f.dataMap = make(map[int32]*loadertask)
 	return nil
 }
 
@@ -252,7 +252,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, 
 		var playno = f.current
 		go func() {
 			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno)
-			f.tasks <- loadertask{data: data, playno: playno, err: err}
+			f.tasks <- &loadertask{data: data, playno: playno, err: err}
 		}()
 		f.current++
 		go func() {
@@ -267,7 +267,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, 
 					cend = f.end
 					f.endno = f.current
 				}
-				f.jobs <- loaderjob{start: cstart, end: cend, playno: f.current}
+				f.jobs <- &loaderjob{start: cstart, end: cend, playno: f.current}
 				if f.endno > 0 {
 					close(f.jobs)
 					break
@@ -340,7 +340,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 	}
 }
 
-func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (bytes.Buffer, error) {
+func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (*bytes.Buffer, error) {
 	var (
 		data      bytes.Buffer
 		trytimes  uint8
@@ -361,7 +361,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.progress != nil {
 					f.bytesgot <- int64(n)
 				}
-				return data, nil
+				return &data, nil
 			}
 			data.Write(buf[0:n])
 			if f.progress != nil {
@@ -372,7 +372,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			continue
 		}
 		if err == io.EOF {
-			return data, nil
+			return &data, nil
 		}
 		// some error happened
 		trytimes = trytimes + 1
@@ -385,13 +385,13 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		}
 		f.logger.Printf(errmsg)
 		if trytimes > maxtimes {
-			return data, err
+			return &data, err
 		}
 		time.Sleep(time.Second)
 		cstart = start + int64(data.Len())
 		resp, err = f.loadItem(cstart, end)
 		if err != nil {
-			return data, err
+			return &data, err
 		}
 	}
 }
@@ -402,10 +402,10 @@ func (f *Fastloader) worker() {
 		if more {
 			resp, err := f.loadItem(job.start, job.end)
 			if err != nil {
-				f.tasks <- loadertask{err: err, playno: job.playno}
+				f.tasks <- &loadertask{err: err, playno: job.playno}
 			} else {
 				data, err := f.getItem(resp, job.start, job.end, job.playno)
-				f.tasks <- loadertask{data: data, playno: job.playno, err: err}
+				f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
 			}
 		} else {
 			return
