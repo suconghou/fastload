@@ -87,53 +87,47 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 	if resource, ok := f.dataMap[f.played]; ok {
 		delete(f.dataMap, f.played) // free memory
-		n, err := resource.data.Read(p)
-		f.readed = f.readed + int64(n)
-		if n == 0 && resource.err != nil {
-			return 0, resource.err
-		}
-		if resource.data.Len() == 0 {
-			if f.played > 0 && f.played == f.endno {
-				if f.progress != nil {
-					f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+		if resource.data != nil && resource.data.Len() > 0 {
+			n, err := resource.data.Read(p)
+			f.readed = f.readed + int64(n)
+			if resource.data.Len() == 0 {
+				if f.played > 0 && f.played == f.endno {
+					if f.progress != nil {
+						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+					}
+					return n, io.EOF
 				}
-				f.Close()
-				return n, io.EOF
-			}
-			if resource.err == nil {
-				f.played++
+				if resource.err == nil {
+					f.played++
+				} else {
+					f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
+				}
 			} else {
 				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
-		} else {
-			f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
+			return n, err
+		} else if resource.err != nil { // data is nil & has err
+			return 0, resource.err
+		} else { // data is nil & err is nil
+			f.played++
+			return 0, nil
 		}
-		return n, err
 	}
 	for {
 		task := <-f.tasks
 		f.dataMap[task.playno] = task
-		if task.err != nil {
-			var partLen int
-			if task.data != nil {
-				partLen = task.data.Len()
-			}
-			f.logger.Printf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, partLen, task.err)
-		} else {
-			f.logger.Printf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len())
-		}
 		if _, ok := f.dataMap[f.played]; ok {
 			return 0, nil
 		}
-		f.logger.Printf("%s : waiting for part %d", f.url, f.played)
+		f.logger.Printf("%s : got part %d , waiting for part %d", f.url, task.playno, f.played)
 	}
 }
 
 //Close clean work
 func (f *Fastloader) Close() error {
-	f.tasks = make(chan *loadertask, 64)
+	f.tasks = make(chan *loadertask, 8)
 	f.bytesgot = make(chan int64, 8)
-	f.jobs = make(chan *loaderjob, 64)
+	f.jobs = make(chan *loaderjob, 8)
 	f.dataMap = make(map[int32]*loadertask)
 	return nil
 }
@@ -354,7 +348,6 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		errmsg    string
 	)
 	defer resp.Body.Close()
-	f.logger.Printf("%s : part %d http range size %d", f.url, playno, rangesize)
 	buf := make([]byte, 262144)
 	for {
 		n, err := resp.Body.Read(buf)
