@@ -114,7 +114,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		task := <-f.tasks
 		f.dataMap[task.playno] = task
 		if task.err != nil {
-			f.logger.Printf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, task.data.Len(), task.err)
+			var partLen int
+			if task.data != nil {
+				partLen = task.data.Len()
+			}
+			f.logger.Printf("%s : part %d/%d download error size %d %s", f.url, task.playno, f.endno, partLen, task.err)
 		} else {
 			f.logger.Printf("%s : part %d/%d download ok size %d", f.url, task.playno, f.endno, task.data.Len())
 		}
@@ -402,7 +406,7 @@ func (f *Fastloader) worker() {
 		if more {
 			resp, err := f.loadItem(job.start, job.end)
 			if err != nil {
-				f.tasks <- &loadertask{err: err, playno: job.playno}
+				f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
 			} else {
 				data, err := f.getItem(resp, job.start, job.end, job.playno)
 				f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
