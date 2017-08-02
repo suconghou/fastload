@@ -380,12 +380,12 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		}
 		// some error happened
 		trytimes = trytimes + 1
-		if err, ok := err.(net.Error); ok && err.Timeout() {
+		if er, ok := err.(net.Error); ok && er.Timeout() {
 			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
 		} else if err == io.ErrUnexpectedEOF {
 			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", f.url, playno, trytimes, err)
 		} else {
-			errmsg = fmt.Sprintf("%s : part %d unknow error after %d times %s", f.url, playno, trytimes, err)
+			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", f.url, playno, trytimes, err)
 		}
 		f.logger.Printf(errmsg)
 		if trytimes > maxtimes {
