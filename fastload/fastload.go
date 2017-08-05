@@ -340,15 +340,15 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 
 func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (*bytes.Buffer, error) {
 	var (
-		data      bytes.Buffer
+		data      = bytes.NewBuffer(nil)
 		trytimes  uint8
 		maxtimes  uint8 = 5
 		rangesize       = end - start
 		cstart    int64
 		errmsg    string
+		buf       = make([]byte, 262144)
 	)
 	defer resp.Body.Close()
-	buf := make([]byte, 262144)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
@@ -358,7 +358,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.progress != nil {
 					f.bytesgot <- int64(n)
 				}
-				return &data, nil
+				return data, nil
 			}
 			data.Write(buf[0:n])
 			if f.progress != nil {
@@ -369,10 +369,10 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			continue
 		}
 		if err == io.EOF {
-			return &data, nil
+			return data, nil
 		}
 		// some error happened
-		trytimes = trytimes + 1
+		trytimes++
 		if er, ok := err.(net.Error); ok && er.Timeout() {
 			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
 		} else if err == io.ErrUnexpectedEOF {
@@ -382,13 +382,13 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		}
 		f.logger.Printf(errmsg)
 		if trytimes > maxtimes {
-			return &data, err
+			return data, err
 		}
 		time.Sleep(time.Second)
 		cstart = start + int64(data.Len())
 		resp, err = f.loadItem(cstart, end)
 		if err != nil {
-			return &data, err
+			return data, err
 		}
 	}
 }
