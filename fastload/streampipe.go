@@ -7,8 +7,8 @@ import (
 )
 
 // Pipe get resp from url and response the the request can also be a http proxy
-func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func(http.Header, *http.Response) int) (int64, error) {
-	resp, err := newClient(url, r.Method, r.Header, nil, 3600, r.Body, nil)
+func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func(http.Header, *http.Response) int, timeout int64, transport *http.Transport) (int64, error) {
+	resp, err := newClient(url, r.Method, r.Header, nil, timeout, r.Body, transport)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("%s", err), 500)
 		return 0, err
