@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"time"
@@ -106,9 +105,9 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
 			return n, err
-		} else if resource.err != nil { // data is nil & has err
+		} else if resource.err != nil { // data is nil & has err, abort
 			return 0, resource.err
-		} else { // data is nil & err is nil
+		} else { // data is nil & err is nil, ignore
 			f.played++
 			return 0, nil
 		}
@@ -182,14 +181,14 @@ func respEnd(resp *http.Response) bool {
 	return false
 }
 
-//Get does
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64)) (io.ReadCloser, int64, int64, int32, error) {
+//Get load with certain ua and thread thunk
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), out io.Writer) (io.ReadCloser, int64, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
-	return NewLoader(url, 4, 1048576, reqHeader, progress, nil, os.Stderr).Load(start, end)
+	return NewLoader(url, 4, 1048576, reqHeader, progress, nil, out).Load(start, end)
 }
 
-//NewLoader ...
+//NewLoader return fastloader instance
 func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), transport *http.Transport, out io.Writer) *Fastloader {
 	if out == nil {
 		out = ioutil.Discard
@@ -397,6 +396,9 @@ func (f *Fastloader) worker() {
 	for {
 		job, more := <-f.jobs
 		if more {
+			if job.playno-f.played > 5*f.thread {
+				time.Sleep(time.Duration(job.playno-f.played) * time.Second)
+			}
 			resp, err := f.loadItem(job.start, job.end)
 			if err != nil {
 				f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
