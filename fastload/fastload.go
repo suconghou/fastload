@@ -21,6 +21,8 @@ var (
 // Fastloader instance
 type Fastloader struct {
 	url       string
+	mirrors   []string
+	mirror    chan string
 	thunk     int64
 	thread    int32
 	total     int64 // 要求下载的大小 range
@@ -124,10 +126,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 
 //Close clean work
 func (f *Fastloader) Close() error {
-	f.tasks = make(chan *loadertask, 8)
+	f.tasks = make(chan *loadertask, f.thread)
 	f.bytesgot = make(chan int64, 8)
-	f.jobs = make(chan *loaderjob, 8)
+	f.jobs = make(chan *loaderjob, f.thread)
 	f.dataMap = make(map[int32]*loadertask)
+	f.mirror = make(chan string, 2*f.thread)
 	return nil
 }
 
@@ -185,7 +188,7 @@ func respEnd(resp *http.Response) bool {
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), out io.Writer) (io.ReadCloser, int64, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
-	return NewLoader(url, 4, 1048576, reqHeader, progress, nil, out).Load(start, end)
+	return NewLoader(url, 4, 524288, reqHeader, progress, nil, out).Load(start, end, nil)
 }
 
 //NewLoader return fastloader instance
@@ -203,14 +206,15 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 		logger:    log.New(out, "", log.Lshortfile|log.LstdFlags),
 	}
 	loader.Close()
+	loader.mirror <- url
 	return loader
 }
 
 //Load return reader , resp , rangesize , total , thread , error
-func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, int32, error) {
+func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadCloser, int64, int64, int32, error) {
 	start, end = f.fixstartend(start, end)
 	f.startTime = time.Now()
-	resp, err := f.loadItem(start, end)
+	resp, url, err := f.loadItem(start, end)
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -224,6 +228,21 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, 
 			f.filesize, _ = strconv.ParseInt(matches[1], 10, 64)
 		}
 		f.start = start
+		if mirrors != nil && len(mirrors) > 0 {
+			f.mirrors = mirrors
+			func() {
+				var i int32
+				for {
+					for _, u := range mirrors {
+						f.mirror <- u
+						i++
+						if i > f.thread {
+							return
+						}
+					}
+				}
+			}()
+		}
 		if end > f.total+f.start || end <= 0 {
 			end = f.total + f.start
 		}
@@ -248,7 +267,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, int64, int64, 
 		}
 		var playno = f.current
 		go func() {
-			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno)
+			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno, url)
 			f.tasks <- &loadertask{data: data, playno: playno, err: err}
 		}()
 		f.current++
@@ -306,9 +325,15 @@ func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 	return start, end
 }
 
-func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
-	var extraHeader = http.Header{}
-	var timeout int64
+func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, error) {
+	var (
+		extraHeader = http.Header{}
+		timeout     int64
+		url         = f.url
+	)
+	if f.mirrors != nil {
+		url = <-f.mirror
+	}
 	if end > start && start >= 0 {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
 		timeout = (end - start) / 1024 / 4
@@ -319,25 +344,25 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, error) {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-", start))
 		timeout = 3600
 	} else {
-		return nil, fmt.Errorf("%s : bad range arguements %d-%d ", f.url, start, end)
+		return nil, url, fmt.Errorf("%s : bad range arguements %d-%d ", url, start, end)
 	}
 	if timeout < 60 {
 		timeout = 60
 	}
-	resp, err := newClient(f.url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
+	resp, err := newClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
 	if err != nil {
-		return resp, err
+		return resp, url, err
 	}
 	if respOk(resp) {
-		return resp, nil
+		return resp, url, nil
 	} else if respEnd(resp) {
-		return resp, io.EOF
+		return resp, url, io.EOF
 	} else {
-		return resp, fmt.Errorf("%s : %s", f.url, resp.Status)
+		return resp, url, fmt.Errorf("%s : %s", url, resp.Status)
 	}
 }
 
-func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32) (*bytes.Buffer, error) {
+func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) (*bytes.Buffer, error) {
 	var (
 		data      = bytes.NewBuffer(nil)
 		trytimes  uint8
@@ -357,6 +382,9 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.progress != nil {
 					f.bytesgot <- int64(n)
 				}
+				if f.mirrors != nil {
+					f.mirror <- url
+				}
 				return data, nil
 			}
 			data.Write(buf[0:n])
@@ -368,25 +396,34 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			continue
 		}
 		if err == io.EOF {
+			if f.mirrors != nil {
+				f.mirror <- url
+			}
 			return data, nil
 		}
 		// some error happened
 		trytimes++
 		if er, ok := err.(net.Error); ok && er.Timeout() {
-			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", f.url, playno, trytimes, err)
+			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", url, playno, trytimes, err)
 		} else if err == io.ErrUnexpectedEOF {
-			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", f.url, playno, trytimes, err)
+			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", url, playno, trytimes, err)
 		} else {
-			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", f.url, playno, trytimes, err)
+			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", url, playno, trytimes, err)
 		}
 		f.logger.Printf(errmsg)
 		if trytimes > maxtimes {
+			if f.mirrors != nil {
+				f.mirror <- f.url
+			}
 			return data, err
 		}
 		time.Sleep(time.Second)
 		cstart = start + int64(data.Len())
-		resp, err = f.loadItem(cstart, end)
+		resp, url, err = f.loadItem(cstart, end)
 		if err != nil {
+			if f.mirrors != nil {
+				f.mirror <- url
+			}
 			return data, err
 		}
 	}
@@ -399,11 +436,11 @@ func (f *Fastloader) worker() {
 			if job.playno-f.played > 5*f.thread {
 				time.Sleep(time.Duration(job.playno-f.played) * time.Second)
 			}
-			resp, err := f.loadItem(job.start, job.end)
+			resp, url, err := f.loadItem(job.start, job.end)
 			if err != nil {
 				f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
 			} else {
-				data, err := f.getItem(resp, job.start, job.end, job.playno)
+				data, err := f.getItem(resp, job.start, job.end, job.playno, url)
 				f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
 			}
 		} else {
