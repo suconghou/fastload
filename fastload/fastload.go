@@ -134,7 +134,8 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-func newClient(url string, method string, reqHeader http.Header, extraHeader http.Header, timeout int64, body io.Reader, transport *http.Transport) (*http.Response, error) {
+// NewClient is a http client and do a request
+func NewClient(url string, method string, reqHeader http.Header, extraHeader http.Header, timeout int64, body io.Reader, transport *http.Transport) (*http.Response, error) {
 	var client *http.Client
 	if transport != nil {
 		client = &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
@@ -349,7 +350,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	if timeout < 60 {
 		timeout = 60
 	}
-	resp, err := newClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
+	resp, err := NewClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
 	if err != nil {
 		return resp, url, err
 	}
