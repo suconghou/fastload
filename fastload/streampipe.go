@@ -35,6 +35,7 @@ func FastPipe(w http.ResponseWriter, r *http.Request, url string, thread int32, 
 		http.Error(w, err.Error(), 500)
 		return 0, err
 	}
+	defer body.Close()
 	out := w.Header()
 	for key, value := range resp.Header {
 		out.Add(key, value[0])

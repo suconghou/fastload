@@ -46,7 +46,7 @@ type Fastloader struct {
 }
 
 type loadertask struct {
-	data   *bytes.Buffer
+	data   []byte
 	playno int32
 	err    error
 }
@@ -69,11 +69,13 @@ func (wc *writeCounter) Read(p []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	wc.readed += int64(n)
-	timenow := time.Now()
-	if wc.readed == wc.instance.total || timenow.Sub(wc.lastrun).Seconds() > 1 {
-		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
-		wc.lastrun = timenow
+	if wc.instance.progress != nil {
+		wc.readed += int64(n)
+		timenow := time.Now()
+		if wc.readed == wc.instance.total || timenow.Sub(wc.lastrun).Seconds() > 1 {
+			wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
+			wc.lastrun = timenow
+		}
 	}
 	return n, err
 }
@@ -88,10 +90,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 	if resource, ok := f.dataMap[f.played]; ok {
 		delete(f.dataMap, f.played) // free memory
-		if resource.data != nil && resource.data.Len() > 0 {
-			n, err := resource.data.Read(p)
+		if resource.data != nil && len(resource.data) > 0 {
+			n := copy(p, resource.data)
+			resource.data = resource.data[n:]
 			f.readed = f.readed + int64(n)
-			if resource.data.Len() == 0 {
+			if len(resource.data) == 0 {
 				if f.played > 0 && f.played == f.endno {
 					if f.progress != nil {
 						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
@@ -106,7 +109,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 			} else {
 				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
-			return n, err
+			return n, nil
 		} else if resource.err != nil { // data is nil & has err, abort
 			return 0, resource.err
 		} else { // data is nil & err is nil, ignore
@@ -363,15 +366,15 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	}
 }
 
-func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) (*bytes.Buffer, error) {
+func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) ([]byte, error) {
 	var (
-		data      = bytes.NewBuffer(nil)
 		trytimes  uint8
 		maxtimes  uint8 = 5
 		rangesize       = end - start
 		cstart    int64
 		errmsg    string
 		buf       = make([]byte, 262144)
+		data      = bytes.NewBuffer(make([]byte, 0, rangesize))
 	)
 	defer resp.Body.Close()
 	for {
@@ -386,7 +389,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.mirrors != nil {
 					f.mirror <- url
 				}
-				return data, nil
+				return data.Bytes(), nil
 			}
 			data.Write(buf[0:n])
 			if f.progress != nil {
@@ -400,7 +403,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			return data, nil
+			return data.Bytes(), nil
 		}
 		// some error happened
 		trytimes++
@@ -416,7 +419,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- f.url
 			}
-			return data, err
+			return data.Bytes(), err
 		}
 		time.Sleep(time.Second)
 		cstart = start + int64(data.Len())
@@ -425,7 +428,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			return data, err
+			return data.Bytes(), err
 		}
 	}
 }
