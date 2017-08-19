@@ -30,13 +30,16 @@ func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func
 
 // FastPipe use fastload for pipe, thread should be 2-8 , thunk should be 262144-1048576 (256KB-1024KB), len(mirrors) should no more than thread+1 or nil
 func FastPipe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, mirrors []string, rewriteHeader func(http.Header, *http.Response) int, transport *http.Transport) (int64, error) {
-	body, resp, _, _, _, err := NewLoader(url, thread, thunk, r.Header, nil, transport, nil).Load(0, 0, mirrors)
+	body, resp, total, filesize, _, err := NewLoader(url, thread, thunk, r.Header, nil, transport, nil).Load(0, 0, mirrors)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return 0, err
 	}
 	defer body.Close()
 	out := w.Header()
+	if total == filesize {
+		resp.StatusCode = 200
+	}
 	for key, value := range resp.Header {
 		out.Add(key, value[0])
 	}

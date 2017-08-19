@@ -9,13 +9,15 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strconv"
 	"time"
 )
 
 var (
-	rangexp   = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
-	rangefile = regexp.MustCompile(`\d+/(\d+)`)
+	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
+	bufferPool = make(chan *bytes.Buffer, 128)
 )
 
 // Fastloader instance
@@ -41,12 +43,13 @@ type Fastloader struct {
 	dataMap   map[int32]*loadertask
 	startTime time.Time
 	bytesgot  chan int64
+	cancel    chan bool
 	transport *http.Transport
 	progress  func(received int64, readed int64, total int64, duration float64, start int64, end int64)
 }
 
 type loadertask struct {
-	data   []byte
+	data   *bytes.Buffer
 	playno int32
 	err    error
 }
@@ -90,11 +93,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 	if resource, ok := f.dataMap[f.played]; ok {
 		delete(f.dataMap, f.played) // free memory
-		if resource.data != nil && len(resource.data) > 0 {
-			n := copy(p, resource.data)
-			resource.data = resource.data[n:]
+		if resource.data != nil && resource.data.Len() > 0 {
+			n, err := resource.data.Read(p)
 			f.readed = f.readed + int64(n)
-			if len(resource.data) == 0 {
+			if resource.data.Len() == 0 {
+				bufferPool <- resource.data
 				if f.played > 0 && f.played == f.endno {
 					if f.progress != nil {
 						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
@@ -109,8 +112,8 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 			} else {
 				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
-			return n, nil
-		} else if resource.err != nil { // data is nil & has err, abort
+			return n, err
+		} else if resource.err != nil { // data is nil & has err, request failed, abort
 			return 0, resource.err
 		} else { // data is nil & err is nil, ignore
 			f.played++
@@ -118,6 +121,11 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		}
 	}
 	for {
+		select {
+		case <-f.cancel:
+			return 0, io.EOF
+		default:
+		}
 		task := <-f.tasks
 		f.dataMap[task.playno] = task
 		if _, ok := f.dataMap[f.played]; ok {
@@ -129,11 +137,14 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 
 //Close clean work
 func (f *Fastloader) Close() error {
-	f.tasks = make(chan *loadertask, f.thread)
-	f.bytesgot = make(chan int64, 8)
-	f.jobs = make(chan *loaderjob, f.thread)
-	f.dataMap = make(map[int32]*loadertask)
-	f.mirror = make(chan string, 2*f.thread)
+	f.cancel <- true
+	close(f.cancel)
+	for _, item := range f.dataMap {
+		item.data.Reset()
+		bufferPool <- item.data
+	}
+	f.dataMap = nil
+	f = nil
 	return nil
 }
 
@@ -208,8 +219,13 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 		reqHeader: reqHeader,
 		transport: transport,
 		logger:    log.New(out, "", log.Lshortfile|log.LstdFlags),
+		tasks:     make(chan *loadertask, thread),
+		bytesgot:  make(chan int64, 8),
+		jobs:      make(chan *loaderjob, thread),
+		dataMap:   make(map[int32]*loadertask),
+		mirror:    make(chan string, 2*thread),
+		cancel:    make(chan bool, 1),
 	}
-	loader.Close()
 	loader.mirror <- url
 	return loader
 }
@@ -366,18 +382,29 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	}
 }
 
-func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) ([]byte, error) {
+func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) (*bytes.Buffer, error) {
 	var (
+		data      *bytes.Buffer
 		trytimes  uint8
 		maxtimes  uint8 = 5
 		rangesize       = end - start
 		cstart    int64
 		errmsg    string
 		buf       = make([]byte, 262144)
-		data      = bytes.NewBuffer(make([]byte, 0, rangesize))
 	)
+	select {
+	case data = <-bufferPool:
+	default:
+		data = bytes.NewBuffer(make([]byte, 0, 262144))
+	}
 	defer resp.Body.Close()
 	for {
+		select {
+		case <-f.cancel:
+			bufferPool <- data
+			runtime.Goexit()
+		default:
+		}
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			if playno == 0 && int64(data.Len()+n) >= rangesize {
@@ -389,7 +416,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.mirrors != nil {
 					f.mirror <- url
 				}
-				return data.Bytes(), nil
+				return data, nil
 			}
 			data.Write(buf[0:n])
 			if f.progress != nil {
@@ -403,7 +430,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			return data.Bytes(), nil
+			return data, nil
 		}
 		// some error happened
 		trytimes++
@@ -419,7 +446,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- f.url
 			}
-			return data.Bytes(), err
+			return data, err
 		}
 		time.Sleep(time.Second)
 		cstart = start + int64(data.Len())
@@ -428,13 +455,18 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			return data.Bytes(), err
+			return data, err
 		}
 	}
 }
 
 func (f *Fastloader) worker() {
 	for {
+		select {
+		case <-f.cancel:
+			runtime.Goexit()
+		default:
+		}
 		job, more := <-f.jobs
 		if more {
 			if job.playno-f.played > 5*f.thread {
@@ -448,7 +480,7 @@ func (f *Fastloader) worker() {
 				f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
 			}
 		} else {
-			return
+			runtime.Goexit()
 		}
 	}
 }
