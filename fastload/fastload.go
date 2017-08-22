@@ -18,6 +18,7 @@ var (
 	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
 	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
 	bufferPool = make(chan *bytes.Buffer, 128)
+	bufPool    = make(chan []byte, 32)
 )
 
 // Fastloader instance
@@ -387,21 +388,27 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		data      *bytes.Buffer
 		trytimes  uint8
 		maxtimes  uint8 = 5
-		rangesize       = end - start
 		cstart    int64
 		errmsg    string
-		buf       = make([]byte, 262144)
+		rangesize = end - start
+		buf       []byte
 	)
 	select {
 	case data = <-bufferPool:
 	default:
 		data = bytes.NewBuffer(make([]byte, 0, 262144))
 	}
+	select {
+	case buf = <-bufPool:
+	default:
+		buf = make([]byte, 262144)
+	}
 	defer resp.Body.Close()
 	for {
 		select {
 		case <-f.cancel:
 			bufferPool <- data
+			bufPool <- buf
 			runtime.Goexit()
 		default:
 		}
