@@ -18,7 +18,6 @@ var (
 	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
 	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
 	bufferPool = make(chan *bytes.Buffer, 128)
-	bufPool    = make(chan []byte, 32)
 )
 
 // Fastloader instance
@@ -135,8 +134,10 @@ func (f *Fastloader) Close() error {
 	f.cancel <- true
 	close(f.cancel)
 	for _, item := range f.dataMap {
-		item.data.Reset()
-		bufferPool <- item.data
+		if item.data != nil {
+			item.data.Reset()
+			bufferPool <- item.data
+		}
 	}
 	f.dataMap = nil
 	f = nil
@@ -385,44 +386,31 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		cstart    int64
 		errmsg    string
 		rangesize = end - start
-		buf       []byte
+		r         io.Reader
 	)
 	select {
 	case data = <-bufferPool:
 	default:
 		data = bytes.NewBuffer(make([]byte, 0, 262144))
 	}
-	select {
-	case buf = <-bufPool:
-	default:
-		buf = make([]byte, 262144)
-	}
 	defer resp.Body.Close()
+	if playno == 0 {
+		r = io.LimitReader(resp.Body, rangesize)
+	} else {
+		r = resp.Body
+	}
 	for {
 		select {
 		case <-f.cancel:
+			data.Reset()
 			bufferPool <- data
-			bufPool <- buf
 			runtime.Goexit()
 		default:
 		}
-		n, err := resp.Body.Read(buf)
+		n, err := io.CopyN(data, r, 262144)
 		if n > 0 {
-			if playno == 0 && int64(data.Len()+n) >= rangesize {
-				n = int(rangesize) - data.Len()
-				data.Write(buf[0:n])
-				if f.progress != nil {
-					f.bytesgot <- int64(n)
-				}
-				if f.mirrors != nil {
-					f.mirror <- url
-				}
-				bufPool <- buf
-				return data, nil
-			}
-			data.Write(buf[0:n])
 			if f.progress != nil {
-				f.bytesgot <- int64(n)
+				f.bytesgot <- n
 			}
 		}
 		if err == nil {
@@ -432,7 +420,6 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			bufPool <- buf
 			return data, nil
 		}
 		// some error happened
@@ -449,7 +436,6 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- f.url
 			}
-			bufPool <- buf
 			return data, err
 		}
 		time.Sleep(time.Second)
@@ -459,7 +445,6 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			bufPool <- buf
 			return data, err
 		}
 	}
