@@ -93,30 +93,24 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	if resource, ok := f.dataMap[f.played]; ok {
-		delete(f.dataMap, f.played) // free memory
 		if resource.data != nil && resource.data.Len() > 0 {
 			n, err := resource.data.Read(p)
 			f.readed = f.readed + int64(n)
 			if resource.data.Len() == 0 {
 				bufferPool <- resource.data
-				if f.played > 0 && f.played == f.endno {
+				if f.played > 0 && f.played == f.endno && resource.err == nil {
 					if f.progress != nil {
 						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
 					}
+					delete(f.dataMap, f.played)
 					return n, io.EOF
 				}
-				if resource.err == nil {
-					f.played++
-				} else {
-					f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
-				}
-			} else {
-				f.dataMap[f.played] = &loadertask{data: resource.data, playno: resource.playno, err: resource.err}
 			}
 			return n, err
 		} else if resource.err != nil { // data is nil & has err, request failed, abort
 			return 0, resource.err
-		} else { // data is nil & err is nil, ignore
+		} else { // data is nil & err is nil, continue
+			delete(f.dataMap, f.played)
 			f.played++
 			return 0, nil
 		}
@@ -423,6 +417,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				if f.mirrors != nil {
 					f.mirror <- url
 				}
+				bufPool <- buf
 				return data, nil
 			}
 			data.Write(buf[0:n])
@@ -437,6 +432,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
+			bufPool <- buf
 			return data, nil
 		}
 		// some error happened
@@ -453,6 +449,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- f.url
 			}
+			bufPool <- buf
 			return data, err
 		}
 		time.Sleep(time.Second)
@@ -462,6 +459,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
+			bufPool <- buf
 			return data, err
 		}
 	}
