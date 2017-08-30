@@ -182,14 +182,14 @@ func reqWithHeader(req *http.Request, reqHeader http.Header, extraHeader http.He
 }
 
 func respOk(resp *http.Response) bool {
-	if resp.StatusCode >= 200 && resp.StatusCode <= 209 {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode <= http.StatusIMUsed {
 		return true
 	}
 	return false
 }
 
 func respEnd(resp *http.Response) bool {
-	if resp.StatusCode == 416 {
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		return true
 	}
 	return false
@@ -237,7 +237,7 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 	if resp.ContentLength > 0 {
 		f.total = resp.ContentLength
 	}
-	if f.total > f.thunk && resp.StatusCode == 206 && resp.ProtoAtLeast(1, 1) {
+	if f.total > f.thunk && resp.StatusCode == http.StatusPartialContent && resp.ProtoAtLeast(1, 1) {
 		cr := resp.Header.Get("Content-Range")
 		if rangefile.MatchString(cr) {
 			matches := rangefile.FindStringSubmatch(cr)

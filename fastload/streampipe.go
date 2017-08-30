@@ -13,7 +13,7 @@ import (
 func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func(http.Header, *http.Response) int, timeout int64, transport *http.Transport) (int64, error) {
 	resp, err := NewClient(url, r.Method, r.Header, nil, timeout, r.Body, transport)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err
 	}
 	defer resp.Body.Close()
@@ -32,13 +32,13 @@ func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func
 func FastPipe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, mirrors []string, rewriteHeader func(http.Header, *http.Response) int, transport *http.Transport) (int64, error) {
 	body, resp, total, filesize, _, err := NewLoader(url, thread, thunk, r.Header, nil, transport, nil).Load(0, 0, mirrors)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err
 	}
 	defer body.Close()
 	out := w.Header()
 	if total == filesize {
-		resp.StatusCode = 200
+		resp.StatusCode = http.StatusOK
 	}
 	for key, value := range resp.Header {
 		out.Add(key, value[0])
