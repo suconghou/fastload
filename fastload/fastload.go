@@ -456,21 +456,21 @@ func (f *Fastloader) worker() {
 		case <-f.cancel:
 			runtime.Goexit()
 		default:
-		}
-		job, more := <-f.jobs
-		if more {
-			if job.playno-f.played > 5*f.thread {
-				time.Sleep(time.Duration(job.playno-f.played) * time.Second)
-			}
-			resp, url, err := f.loadItem(job.start, job.end)
-			if err != nil {
-				f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
+			job, more := <-f.jobs
+			if more {
+				if job.playno-f.played > 5*f.thread {
+					time.Sleep(time.Duration(job.playno-f.played) * time.Second)
+				}
+				resp, url, err := f.loadItem(job.start, job.end)
+				if err != nil {
+					f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
+				} else {
+					data, err := f.getItem(resp, job.start, job.end, job.playno, url)
+					f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
+				}
 			} else {
-				data, err := f.getItem(resp, job.start, job.end, job.playno, url)
-				f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
+				runtime.Goexit()
 			}
-		} else {
-			runtime.Goexit()
 		}
 	}
 }
