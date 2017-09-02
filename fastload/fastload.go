@@ -345,14 +345,16 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	var (
 		extraHeader = http.Header{}
 		timeout     int64
-		url         = f.url
+		low         int64 = 4
+		url               = f.url
 	)
 	if f.mirrors != nil {
 		url = <-f.mirror
+		low = 32
 	}
 	if end > start && start >= 0 {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
-		timeout = (end - start) / 1024 / 4
+		timeout = (end - start) / 1024 / low
 	} else if start == 0 && end == 0 {
 		extraHeader.Set("Range", "bytes=0-")
 		timeout = 86400
@@ -362,8 +364,8 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	} else {
 		return nil, url, fmt.Errorf("%s : bad range arguements %d-%d ", url, start, end)
 	}
-	if timeout < 60 {
-		timeout = 60
+	if timeout < 30 {
+		timeout = 30
 	}
 	resp, err := NewClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
 	if err != nil {
@@ -424,17 +426,20 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		}
 		// some error happened
 		trytimes++
+		var returl = url
 		if er, ok := err.(net.Error); ok && er.Timeout() {
 			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", url, playno, trytimes, err)
 		} else if err == io.ErrUnexpectedEOF {
 			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", url, playno, trytimes, err)
+			returl = f.url
 		} else {
 			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", url, playno, trytimes, err)
+			returl = f.url
 		}
 		f.logger.Printf(errmsg)
 		if trytimes > maxtimes {
 			if f.mirrors != nil {
-				f.mirror <- f.url
+				f.mirror <- returl
 			}
 			return data, err
 		}
