@@ -52,6 +52,7 @@ type loadertask struct {
 	data   *bytes.Buffer
 	playno int32
 	err    error
+	url    string
 }
 
 type loaderjob struct {
@@ -125,7 +126,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		if _, ok := f.dataMap[f.played]; ok {
 			return 0, nil
 		}
-		f.logger.Printf("%s : got part %d , waiting for part %d", f.url, task.playno, f.played)
+		f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 	}
 }
 
@@ -284,7 +285,7 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 		var playno = f.current
 		go func() {
 			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno, url)
-			f.tasks <- &loadertask{data: data, playno: playno, err: err}
+			f.tasks <- &loadertask{data: data, playno: playno, err: err, url: url}
 		}()
 		f.current++
 		go func() {
@@ -450,7 +451,17 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			if f.mirrors != nil {
 				f.mirror <- url
 			}
-			return data, err
+			if er, ok := err.(net.Error); ok && er.Timeout() {
+				resp, url, err = f.loadItem(cstart, end)
+				if err != nil {
+					if f.mirrors != nil {
+						f.mirror <- url
+					}
+					return data, err
+				}
+			} else {
+				return data, err
+			}
 		}
 	}
 }
@@ -468,10 +479,26 @@ func (f *Fastloader) worker() {
 				}
 				resp, url, err := f.loadItem(job.start, job.end)
 				if err != nil {
-					f.tasks <- &loadertask{data: nil, playno: job.playno, err: err}
+					if f.mirrors != nil {
+						f.mirror <- url
+					}
+					if er, ok := err.(net.Error); ok && er.Timeout() {
+						resp, url, err = f.loadItem(job.start, job.end)
+						if err != nil {
+							if f.mirrors != nil {
+								f.mirror <- url
+							}
+							f.tasks <- &loadertask{data: nil, playno: job.playno, err: err, url: url}
+						} else {
+							data, err := f.getItem(resp, job.start, job.end, job.playno, url)
+							f.tasks <- &loadertask{data: data, playno: job.playno, err: err, url: url}
+						}
+					} else {
+						f.tasks <- &loadertask{data: nil, playno: job.playno, err: err, url: url}
+					}
 				} else {
 					data, err := f.getItem(resp, job.start, job.end, job.playno, url)
-					f.tasks <- &loadertask{data: data, playno: job.playno, err: err}
+					f.tasks <- &loadertask{data: data, playno: job.playno, err: err, url: url}
 				}
 			} else {
 				runtime.Goexit()
