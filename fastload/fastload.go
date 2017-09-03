@@ -2,6 +2,7 @@ package fastload
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -43,7 +44,8 @@ type Fastloader struct {
 	dataMap   map[int32]*loadertask
 	startTime time.Time
 	bytesgot  chan int64
-	cancel    chan bool
+	cancel    context.CancelFunc
+	ctx       context.Context
 	transport *http.Transport
 	progress  func(received int64, readed int64, total int64, duration float64, start int64, end int64)
 }
@@ -117,8 +119,8 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 	for {
 		select {
-		case <-f.cancel:
-			return 0, io.EOF
+		case <-f.ctx.Done():
+			return 0, io.ErrUnexpectedEOF
 		default:
 		}
 		task := <-f.tasks
@@ -132,8 +134,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 
 //Close clean work
 func (f *Fastloader) Close() error {
-	f.cancel <- true
-	close(f.cancel)
+	f.cancel()
 	for _, item := range f.dataMap {
 		if item.data != nil {
 			item.data.Reset()
@@ -141,7 +142,6 @@ func (f *Fastloader) Close() error {
 		}
 	}
 	f.dataMap = nil
-	f = nil
 	return nil
 }
 
@@ -208,6 +208,7 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 	if out == nil {
 		out = ioutil.Discard
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	loader := &Fastloader{
 		url:       url,
 		thread:    thread,
@@ -221,7 +222,8 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 		jobs:      make(chan *loaderjob, thread),
 		dataMap:   make(map[int32]*loadertask),
 		mirror:    make(chan string, 2*thread),
-		cancel:    make(chan bool, 1),
+		cancel:    cancel,
+		ctx:       ctx,
 	}
 	loader.mirror <- url
 	return loader
@@ -251,7 +253,12 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 				var i int32
 				for {
 					for _, u := range mirrors {
-						f.mirror <- u
+						select {
+						case <-f.ctx.Done():
+							return
+						case f.mirror <- u:
+						default:
+						}
 						i++
 						if i > f.thread {
 							return
@@ -268,16 +275,21 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 			go func() {
 				lastrun := time.Now()
 				for {
-					n := <-f.bytesgot
-					f.loaded = f.loaded + n
-					timenow := time.Now()
-					full := f.start+f.loaded >= f.end
-					if full || timenow.Sub(lastrun).Seconds() > 1 {
-						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
-						lastrun = timenow
-					}
-					if full {
+					select {
+					case <-f.ctx.Done():
 						return
+					default:
+						n := <-f.bytesgot
+						f.loaded = f.loaded + n
+						timenow := time.Now()
+						full := f.start+f.loaded >= f.end
+						if full || timenow.Sub(lastrun).Seconds() > 1 {
+							f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+							lastrun = timenow
+						}
+						if full {
+							return
+						}
 					}
 				}
 			}()
@@ -300,7 +312,11 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 					cend = f.end
 					f.endno = f.current
 				}
-				f.jobs <- &loaderjob{start: cstart, end: cend, playno: f.current}
+				select {
+				case <-f.ctx.Done():
+					return
+				case f.jobs <- &loaderjob{start: cstart, end: cend, playno: f.current}:
+				}
 				if f.endno > 0 {
 					close(f.jobs)
 					break
@@ -358,7 +374,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		timeout = (end - start) / 1024 / low
 	} else if start == 0 && end == 0 {
 		extraHeader.Set("Range", "bytes=0-")
-		timeout = 86400
+		timeout = 7200
 	} else if end == 0 && start > 0 {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-", start))
 		timeout = 3600
@@ -404,7 +420,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 	}
 	for {
 		select {
-		case <-f.cancel:
+		case <-f.ctx.Done():
 			data.Reset()
 			bufferPool <- data
 			runtime.Goexit()
@@ -469,7 +485,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 func (f *Fastloader) worker() {
 	for {
 		select {
-		case <-f.cancel:
+		case <-f.ctx.Done():
 			runtime.Goexit()
 		default:
 			job, more := <-f.jobs
