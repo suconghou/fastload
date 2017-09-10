@@ -340,13 +340,13 @@ func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 		matches := rangexp.FindStringSubmatch(rangeStr)
 		fstart, err := strconv.ParseInt(matches[1], 10, 64)
 		if err != nil {
-			f.logger.Printf("%s: read range header error %s", f.url, err)
+			f.logger.Print(err)
 			return start, end
 		}
 		if matches[2] != "" {
 			fend, err = strconv.ParseInt(matches[2], 10, 64)
 			if err != nil {
-				f.logger.Printf("%s: read range header error %s", f.url, err)
+				f.logger.Print(err)
 				return start, end
 			}
 			fend = fend + 1
@@ -401,7 +401,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 	var (
 		data      *bytes.Buffer
 		trytimes  uint8
-		maxtimes  uint8 = 5
+		maxtimes  uint8 = 9
 		cstart    int64
 		errmsg    string
 		rangesize = end - start
