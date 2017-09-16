@@ -364,6 +364,10 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		timeout     int64
 		low         int64 = 4
 		url               = f.url
+		resp        *http.Response
+		err         error
+		trytimes    uint8
+		maxtimes    uint8 = 9
 	)
 	if f.mirrors != nil {
 		url = <-f.mirror
@@ -384,7 +388,13 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	if timeout < 30 {
 		timeout = 30
 	}
-	resp, err := NewClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
+	for {
+		resp, err = NewClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
+		trytimes++
+		if err == nil || trytimes > maxtimes {
+			break
+		}
+	}
 	if err != nil {
 		return resp, url, err
 	}
