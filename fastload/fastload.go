@@ -67,7 +67,6 @@ type writeCounter struct {
 	instance *Fastloader
 	readed   int64
 	origin   io.ReadCloser
-	lastrun  time.Time
 }
 
 func (wc *writeCounter) Read(p []byte) (int, error) {
@@ -75,13 +74,9 @@ func (wc *writeCounter) Read(p []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
+	wc.readed += int64(n)
 	if wc.instance.progress != nil {
-		wc.readed += int64(n)
-		timenow := time.Now()
-		if wc.readed == wc.instance.total || timenow.Sub(wc.lastrun).Seconds() > 1 {
-			wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
-			wc.lastrun = timenow
-		}
+		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
 	}
 	return n, err
 }
@@ -273,7 +268,6 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 		f.end = end
 		if f.progress != nil {
 			go func() {
-				lastrun := time.Now()
 				for {
 					select {
 					case <-f.ctx.Done():
@@ -281,13 +275,8 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 					default:
 						n := <-f.bytesgot
 						f.loaded = f.loaded + n
-						timenow := time.Now()
-						full := f.start+f.loaded >= f.end
-						if full || timenow.Sub(lastrun).Seconds() > 1 {
-							f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
-							lastrun = timenow
-						}
-						if full {
+						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+						if f.start+f.loaded >= f.end {
 							return
 						}
 					}
@@ -436,7 +425,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			runtime.Goexit()
 		default:
 		}
-		n, err := io.CopyN(data, r, 262144)
+		n, err := io.CopyN(data, r, 65536)
 		if n > 0 {
 			if f.progress != nil {
 				f.bytesgot <- n
