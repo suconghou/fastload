@@ -141,40 +141,19 @@ func (f *Fastloader) Close() error {
 }
 
 // NewClient is a http client and do a request
-func NewClient(url string, method string, reqHeader http.Header, extraHeader http.Header, timeout int64, body io.Reader, transport *http.Transport) (*http.Response, error) {
+func NewClient(url string, method string, reqHeader http.Header, timeout int64, body io.Reader, transport *http.Transport) (*http.Response, error) {
 	var client *http.Client
 	if transport != nil {
 		client = &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
 	} else {
 		client = &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	}
-	req, err := newRequest(url, method, reqHeader, extraHeader, body)
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
+	req.Header = reqHeader
 	return client.Do(req)
-}
-
-func newRequest(url string, method string, reqHeader http.Header, extraHeader http.Header, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return req, err
-	}
-	return reqWithHeader(req, reqHeader, extraHeader), nil
-}
-
-func reqWithHeader(req *http.Request, reqHeader http.Header, extraHeader http.Header) *http.Request {
-	for key, value := range reqHeader {
-		for _, item := range value {
-			req.Header.Set(key, item)
-		}
-	}
-	for key, value := range extraHeader {
-		for _, item := range value {
-			req.Header.Set(key, item)
-		}
-	}
-	return req
 }
 
 func respOk(resp *http.Response) bool {
@@ -358,6 +337,11 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		trytimes    uint8
 		maxtimes    uint8 = 9
 	)
+	for key, value := range f.reqHeader {
+		for _, item := range value {
+			extraHeader.Add(key, item)
+		}
+	}
 	if f.mirrors != nil {
 		url = <-f.mirror
 		low = 32
@@ -378,7 +362,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		timeout = 30
 	}
 	for {
-		resp, err = NewClient(url, "GET", f.reqHeader, extraHeader, timeout, nil, f.transport)
+		resp, err = NewClient(url, "GET", extraHeader, timeout, nil, f.transport)
 		trytimes++
 		if err == nil || trytimes > maxtimes {
 			break
