@@ -330,7 +330,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 	var (
 		extraHeader = http.Header{}
 		timeout     int64
-		low         int64 = 4
+		low         int64 = 16
 		url               = f.url
 		resp        *http.Response
 		err         error
@@ -473,7 +473,7 @@ func (f *Fastloader) worker() {
 		default:
 			job, more := <-f.jobs
 			if more {
-				if job.playno-f.played > 5*f.thread {
+				if job.playno-f.played > 4*f.thread {
 					time.Sleep(time.Duration(job.playno-f.played) * time.Second)
 				}
 				resp, url, err := f.loadItem(job.start, job.end)
