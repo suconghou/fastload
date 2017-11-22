@@ -21,6 +21,8 @@ var (
 	bufferPool = make(chan *bytes.Buffer, 128)
 )
 
+const maxtimes uint8 = 9
+
 // Fastloader instance
 type Fastloader struct {
 	url       string
@@ -71,9 +73,6 @@ type writeCounter struct {
 
 func (wc *writeCounter) Read(p []byte) (int, error) {
 	n, err := wc.origin.Read(p)
-	if err != nil {
-		return n, err
-	}
 	wc.readed += int64(n)
 	if wc.instance.progress != nil {
 		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
@@ -123,7 +122,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		if _, ok := f.dataMap[f.played]; ok {
 			return 0, nil
 		}
-		f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
+		// f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 	}
 }
 
@@ -335,7 +334,6 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		resp        *http.Response
 		err         error
 		trytimes    uint8
-		maxtimes    uint8 = 9
 	)
 	for key, value := range f.reqHeader {
 		for _, item := range value {
@@ -384,7 +382,6 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 	var (
 		data      *bytes.Buffer
 		trytimes  uint8
-		maxtimes  uint8 = 9
 		cstart    int64
 		errmsg    string
 		rangesize = end - start
