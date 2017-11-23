@@ -75,9 +75,9 @@ func HTTPProxy(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	r.Write(server)
-	p1die := make(chan struct{})
+	p1die := make(chan bool)
 	go func() { io.Copy(server, bufrw); close(p1die) }()
-	p2die := make(chan struct{})
+	p2die := make(chan bool)
 	go func() { io.Copy(bufrw, server); close(p2die) }()
 	select {
 	case <-p1die:
