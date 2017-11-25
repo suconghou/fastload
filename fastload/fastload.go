@@ -44,12 +44,11 @@ type Fastloader struct {
 	tasks     chan *loadertask
 	jobs      chan *loaderjob
 	dataMap   map[int32]*loadertask
-	startTime time.Time
 	bytesgot  chan int64
 	cancel    context.CancelFunc
 	ctx       context.Context
 	transport *http.Transport
-	progress  func(received int64, readed int64, total int64, duration float64, start int64, end int64)
+	progress  func(received int64, readed int64, total int64, start int64, end int64)
 }
 
 type loadertask struct {
@@ -75,7 +74,7 @@ func (wc *writeCounter) Read(p []byte) (int, error) {
 	n, err := wc.origin.Read(p)
 	wc.readed += int64(n)
 	if wc.instance.progress != nil {
-		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, time.Since(wc.instance.startTime).Seconds(), 0, wc.instance.total)
+		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, 0, wc.instance.total)
 	}
 	return n, err
 }
@@ -96,7 +95,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 				bufferPool <- resource.data
 				if f.played > 0 && f.played == f.endno && resource.err == nil {
 					if f.progress != nil {
-						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+						f.progress(f.loaded, f.readed, f.total, f.start, f.end)
 					}
 					delete(f.dataMap, f.played)
 					return n, io.EOF
@@ -170,14 +169,14 @@ func respEnd(resp *http.Response) bool {
 }
 
 //Get load with certain ua and thread thunk
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), out io.Writer) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), out io.Writer) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
 	reqHeader := http.Header{}
 	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
 	return NewLoader(url, 4, 524288, reqHeader, progress, nil, out).Load(start, end, nil)
 }
 
 //NewLoader return fastloader instance
-func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, duration float64, start int64, end int64), transport *http.Transport, out io.Writer) *Fastloader {
+func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, out io.Writer) *Fastloader {
 	if out == nil {
 		out = ioutil.Discard
 	}
@@ -205,7 +204,6 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 //Load return reader , resp , rangesize , total , thread , error
 func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
 	start, end = f.fixstartend(start, end)
-	f.startTime = time.Now()
 	resp, url, err := f.loadItem(start, end)
 	if err != nil {
 		return nil, nil, 0, 0, 0, err
@@ -253,7 +251,7 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 					default:
 						n := <-f.bytesgot
 						f.loaded = f.loaded + n
-						f.progress(f.loaded, f.readed, f.total, time.Since(f.startTime).Seconds(), f.start, f.end)
+						f.progress(f.loaded, f.readed, f.total, f.start, f.end)
 						if f.start+f.loaded >= f.end {
 							return
 						}
