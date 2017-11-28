@@ -211,11 +211,15 @@ func (f *Fastloader) Load(start int64, end int64, mirrors []string) (io.ReadClos
 	if resp.ContentLength > 0 {
 		f.total = resp.ContentLength
 	}
-	if f.total > f.thunk && resp.StatusCode == http.StatusPartialContent && resp.ProtoAtLeast(1, 1) {
-		cr := resp.Header.Get("Content-Range")
-		if rangefile.MatchString(cr) {
-			matches := rangefile.FindStringSubmatch(cr)
-			f.filesize, _ = strconv.ParseInt(matches[1], 10, 64)
+	if f.total > f.thunk && resp.ProtoAtLeast(1, 1) {
+		if resp.StatusCode == http.StatusPartialContent {
+			cr := resp.Header.Get("Content-Range")
+			if rangefile.MatchString(cr) {
+				matches := rangefile.FindStringSubmatch(cr)
+				f.filesize, _ = strconv.ParseInt(matches[1], 10, 64)
+			}
+		} else {
+			f.filesize = f.total
 		}
 		f.start = start
 		if mirrors != nil && len(mirrors) > 0 {
@@ -346,7 +350,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*http.Response, string, e
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
 		timeout = (end - start) / 1024 / low
 	} else if start == 0 && end == 0 {
-		extraHeader.Set("Range", "bytes=0-")
+		extraHeader.Del("Range")
 		timeout = 7200
 	} else if end == 0 && start > 0 {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-", start))
