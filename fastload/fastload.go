@@ -171,7 +171,6 @@ func respEnd(resp *http.Response) bool {
 //Get load with certain ua and thread thunk
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), out io.Writer) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
 	reqHeader := http.Header{}
-	reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
 	return NewLoader(url, 4, 524288, reqHeader, progress, nil, out).Load(start, end, nil)
 }
 
@@ -429,7 +428,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		if er, ok := err.(net.Error); ok && er.Timeout() {
 			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", url, playno, trytimes, err)
 		} else if err == io.ErrUnexpectedEOF {
-			errmsg = fmt.Sprintf("%s : part %d server closed error after %d times %s", url, playno, trytimes, err)
+			errmsg = fmt.Sprintf("%s : part %d ErrUnexpectedEOF error after %d times %s", url, playno, trytimes, err)
 			returl = f.url
 		} else {
 			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", url, playno, trytimes, err)
@@ -461,6 +460,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 				return data, err
 			}
 		}
+		r = resp.Body
 	}
 }
 
