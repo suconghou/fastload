@@ -208,6 +208,9 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 
 //Load return reader , resp , rangesize , total , thread , error
 func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
+	if mirrors != nil && len(mirrors) > 0 {
+		f.mirrors = mirrors
+	}
 	url := f.bestURL()
 	start, end = f.fixstartend(start, end)
 	resp, err := f.loadItem(url, start, end)
@@ -228,9 +231,6 @@ func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.Re
 			f.filesize = f.total
 		}
 		f.start = start
-		if mirrors != nil && len(mirrors) > 0 {
-			f.mirrors = mirrors
-		}
 		if end > f.total+f.start || end <= 0 {
 			end = f.total + f.start
 		}
@@ -273,12 +273,10 @@ func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.Re
 			var workerNum int32
 			for {
 				if workerNum < f.thread {
+					go f.worker()
 					workerNum++
-					go f.worker(f.bestURL())
-					runtime.Gosched() // it is important for f.mirror chan
 				}
-				curr := int64(f.current)
-				cstart := curr*f.thunk + f.start
+				cstart := int64(f.current)*f.thunk + f.start
 				cend := cstart + f.thunk
 				if cend >= f.end {
 					cend = f.end
@@ -341,6 +339,7 @@ func (f *Fastloader) bestURL() string {
 			}
 		}
 		f.mirror <- &mirrorValue{u.url, -1}
+		runtime.Gosched()
 		return u.url
 	}
 	return f.url
@@ -440,15 +439,19 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		// some error happened
 		trytimes++
 		var value int
+		var waitValue time.Duration
 		if er, ok := err.(net.Error); ok && er.Timeout() {
 			errmsg = fmt.Sprintf("%s : part %d timeout error after %d times %s", url, playno, trytimes, err)
 			value = -2
+			waitValue = 10
 		} else if err == io.ErrUnexpectedEOF {
 			errmsg = fmt.Sprintf("%s : part %d ErrUnexpectedEOF error after %d times %s", url, playno, trytimes, err)
 			value = -4
+			waitValue = 100
 		} else {
 			errmsg = fmt.Sprintf("%s : part %d error after %d times %s", url, playno, trytimes, err)
 			value = -4
+			waitValue = 200
 		}
 		f.logger.Printf(errmsg)
 		if f.mirrors != nil {
@@ -457,7 +460,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		if trytimes > maxtimes {
 			return data, err
 		}
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * waitValue)
 		cstart = start + int64(data.Len())
 		url = f.bestURL()
 		resp, err = f.loadItem(url, cstart, end)
@@ -482,17 +485,18 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 	}
 }
 
-func (f *Fastloader) worker(url string) {
+func (f *Fastloader) worker() {
+	var url string
 	for {
 		select {
 		case <-f.ctx.Done():
 			runtime.Goexit()
-		default:
-			job, more := <-f.jobs
+		case job, more := <-f.jobs:
 			if more {
 				if job.playno-f.played > 4*f.thread {
-					time.Sleep(time.Duration(job.playno-f.played) * time.Second)
+					time.Sleep(time.Duration(job.playno-f.played) * time.Millisecond)
 				}
+				url = f.bestURL()
 				resp, err := f.loadItem(url, job.start, job.end)
 				if err != nil {
 					if f.mirrors != nil {
