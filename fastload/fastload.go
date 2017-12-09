@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -28,30 +29,31 @@ const (
 
 // Fastloader instance
 type Fastloader struct {
-	url       string
-	mirrors   map[string]int
-	mirror    chan *mirrorValue
-	thunk     int64
-	thread    int32
-	total     int64 // 要求下载的大小 range
-	filesize  int64 // 文件的真实大小 根据206 header 匹配
-	loaded    int64
-	readed    int64
-	start     int64
-	end       int64
-	reqHeader http.Header
-	logger    *log.Logger
-	current   int32
-	played    int32
-	endno     int32
-	tasks     chan *loadertask
-	jobs      chan *loaderjob
-	dataMap   map[int32]*loadertask
-	bytesgot  chan int64
-	cancel    context.CancelFunc
-	ctx       context.Context
-	transport *http.Transport
-	progress  func(received int64, readed int64, total int64, start int64, end int64)
+	url        string
+	mirrors    map[string]int
+	mirror     chan *mirrorValue
+	mirrorLock *sync.Mutex
+	thunk      int64
+	thread     int32
+	total      int64 // 要求下载的大小 range
+	filesize   int64 // 文件的真实大小 根据206 header 匹配
+	loaded     int64
+	readed     int64
+	start      int64
+	end        int64
+	reqHeader  http.Header
+	logger     *log.Logger
+	current    int32
+	played     int32
+	endno      int32
+	tasks      chan *loadertask
+	jobs       chan *loaderjob
+	dataMap    map[int32]*loadertask
+	bytesgot   chan int64
+	cancel     context.CancelFunc
+	ctx        context.Context
+	transport  *http.Transport
+	progress   func(received int64, readed int64, total int64, start int64, end int64)
 }
 
 type loadertask struct {
@@ -188,20 +190,21 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	loader := &Fastloader{
-		url:       url,
-		thread:    thread,
-		thunk:     thunk,
-		progress:  progress,
-		reqHeader: reqHeader,
-		transport: transport,
-		logger:    log.New(out, "", log.Lshortfile|log.LstdFlags),
-		tasks:     make(chan *loadertask, thread),
-		bytesgot:  make(chan int64, thread*10),
-		jobs:      make(chan *loaderjob, thread),
-		dataMap:   make(map[int32]*loadertask),
-		mirror:    make(chan *mirrorValue, thread),
-		cancel:    cancel,
-		ctx:       ctx,
+		url:        url,
+		thread:     thread,
+		thunk:      thunk,
+		progress:   progress,
+		reqHeader:  reqHeader,
+		transport:  transport,
+		logger:     log.New(out, "", log.Lshortfile|log.LstdFlags),
+		tasks:      make(chan *loadertask, thread),
+		bytesgot:   make(chan int64, thread*10),
+		jobs:       make(chan *loaderjob, thread),
+		dataMap:    make(map[int32]*loadertask),
+		mirror:     make(chan *mirrorValue, thread),
+		mirrorLock: &sync.Mutex{},
+		cancel:     cancel,
+		ctx:        ctx,
 	}
 	return loader
 }
@@ -258,7 +261,9 @@ func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.Re
 					case <-f.ctx.Done():
 						return
 					case v := <-f.mirror:
+						f.mirrorLock.Lock()
 						f.mirrors[v.url] += v.value
+						f.mirrorLock.Unlock()
 					}
 				}
 			}()
@@ -293,7 +298,6 @@ func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.Re
 				} else {
 					f.current++
 				}
-				runtime.Gosched()
 			}
 		}()
 		return f, resp, f.total, f.filesize, f.thread, nil
@@ -332,14 +336,15 @@ func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 func (f *Fastloader) bestURL() string {
 	if f.mirrors != nil {
 		u := &mirrorValue{}
+		f.mirrorLock.Lock()
 		for k, v := range f.mirrors {
 			if u.url == "" || v > u.value {
 				u.url = k
 				u.value = v
 			}
 		}
-		f.mirror <- &mirrorValue{u.url, -1}
-		runtime.Gosched()
+		f.mirrors[u.url]--
+		f.mirrorLock.Unlock()
 		return u.url
 	}
 	return f.url
