@@ -84,7 +84,15 @@ func (wc *writeCounter) Read(p []byte) (int, error) {
 	n, err := wc.origin.Read(p)
 	wc.readed += int64(n)
 	if wc.instance.progress != nil {
-		wc.instance.progress(wc.readed, wc.readed, wc.instance.total, 0, wc.instance.total)
+		total := wc.instance.total
+		if total == 0 {
+			if err == io.EOF {
+				total = wc.readed
+			} else {
+				total = wc.readed * 2
+			}
+		}
+		wc.instance.progress(wc.readed, wc.readed, total, 0, total)
 	}
 	return n, err
 }
