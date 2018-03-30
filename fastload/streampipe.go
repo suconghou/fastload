@@ -1,12 +1,12 @@
 package fastload
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // Pipe get resp from url and response the the request can also be a http proxy
@@ -54,34 +54,26 @@ func FastPipe(w http.ResponseWriter, r *http.Request, url string, thread int32, 
 
 // HTTPProxy is http only proxy no https
 func HTTPProxy(w http.ResponseWriter, r *http.Request) error {
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		errorMsg := "your ResponseWriter does not support Hijacking! "
-		http.Error(w, errorMsg, http.StatusInternalServerError)
-		return fmt.Errorf(errorMsg)
-	}
-	_, bufrw, err := hj.Hijack()
+	rwc, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
+	defer rwc.Close()
 	hostPortURL, err := url.Parse(r.RequestURI)
 	address := hostPortURL.Host
 	if strings.Index(address, ":") == -1 {
 		address = address + ":80"
 	}
-	server, err := net.Dial("tcp", address)
+	remote, err := net.Dial("tcp", address)
 	if err != nil {
 		return err
 	}
-	r.Write(server)
-	p1die := make(chan bool)
-	go func() { io.Copy(server, bufrw); close(p1die) }()
-	p2die := make(chan bool)
-	go func() { io.Copy(bufrw, server); close(p2die) }()
-	select {
-	case <-p1die:
-	case <-p2die:
-	}
-	return nil
+	r.Write(remote)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { io.Copy(remote, rwc); wg.Done() }()
+	_, err = io.Copy(buf, remote)
+	wg.Wait()
+	return err
 }
