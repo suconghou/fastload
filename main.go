@@ -122,7 +122,7 @@ func serve() error {
 		startTime := time.Now()
 		n, err := fastServe(w, r, url, thread, thunk, r.Header, start, end, mirrors)
 		speed := float64(n/1024) / time.Since(startTime).Seconds()
-		util.Log.Printf("id %x transfered %s @ %.2fKB/s %s", ID, utilgo.ByteFormat(uint64(n)), speed, utilgo.BoolString(err == nil, "", "canceled"))
+		util.Log.Printf("id %x transfered %s @ %.2fKB/s %s", ID, utilgo.ByteFormat(uint64(n)), speed, utilgo.BoolString(err == nil, "", utilgo.BoolString(err == io.EOF, "finished", err.Error())))
 	})
 	util.Log.Printf("Starting up on port %s\nPath regist %s", port, upath)
 	return http.ListenAndServe(":"+port, nil)

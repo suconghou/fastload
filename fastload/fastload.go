@@ -20,6 +20,8 @@ var (
 	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
 	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
 	bufferPool = make(chan *bytes.Buffer, 128)
+	// ErrCanceled flag this is user canceled
+	ErrCanceled = fmt.Errorf("canceled")
 )
 
 const (
@@ -132,7 +134,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	for {
 		select {
 		case <-f.ctx.Done():
-			return 0, io.ErrUnexpectedEOF
+			return 0, ErrCanceled
 		case task := <-f.tasks:
 			// f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 			f.dataMap[task.playno] = task
