@@ -4,6 +4,9 @@ download file fastly and keep the right stream data
 
 with progressbar and user defined logger
 
+mirror download 
+
+
 
 
 ### API 
@@ -23,6 +26,41 @@ there are two api totally
 
 ### the hard way
 
+
+### cli command 
+
+*wget*
+```
+fastload wget http://xxx.com/file --mirrors http://host1.com/file http://host2.com/file 
+```
+
+--mirrors
+
+--ua
+
+--refer
+
+--cookie 
+
+--range 
+
+--fast 
+
+--slow
+
+--fat
+
+--thin
+
+*serve*
+
+```
+fastload serve http://xxx.com/file
+```
+
+--port
+
+--path 
 
 
 

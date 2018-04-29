@@ -32,7 +32,7 @@ func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func
 func FastPipe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, mirrors map[string]int, rewriteHeader func(http.Header, *http.Response) int, transport *http.Transport) (int64, error) {
 	loader := NewLoader(url, thread, thunk, r.Header, nil, transport, nil)
 	defer loader.Close()
-	body, resp, total, filesize, _, err := loader.Load(0, 0, mirrors)
+	body, resp, total, filesize, _, err := loader.Load(0, 0, 32, mirrors)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err

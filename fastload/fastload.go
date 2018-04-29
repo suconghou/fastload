@@ -41,6 +41,7 @@ type Fastloader struct {
 	readed     int64
 	start      int64
 	end        int64
+	low        int64 // 超时系数 (最低允许速度)
 	reqHeader  http.Header
 	logger     *log.Logger
 	current    int32
@@ -133,12 +134,12 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		case <-f.ctx.Done():
 			return 0, io.ErrUnexpectedEOF
 		case task := <-f.tasks:
+			f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 			f.dataMap[task.playno] = task
 			if _, ok := f.dataMap[f.played]; ok {
 				return 0, nil
 			}
 		}
-		// f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 	}
 }
 
@@ -155,40 +156,10 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-// NewClient is a http client and do a request
-func NewClient(url string, method string, reqHeader http.Header, timeout int64, body io.Reader, transport *http.Transport) (*http.Response, error) {
-	var client *http.Client
-	if transport != nil {
-		client = &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
-	} else {
-		client = &http.Client{Timeout: time.Duration(timeout) * time.Second}
-	}
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = reqHeader
-	return client.Do(req)
-}
-
-func respOk(resp *http.Response) bool {
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode <= http.StatusIMUsed {
-		return true
-	}
-	return false
-}
-
-func respEnd(resp *http.Response) bool {
-	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		return true
-	}
-	return false
-}
-
 //Get load with certain ua and thread thunk
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), out io.Writer) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
 	reqHeader := http.Header{}
-	return NewLoader(url, 4, 524288, reqHeader, progress, nil, out).Load(start, end, nil)
+	return NewLoader(url, 4, 524288, reqHeader, progress, nil, out).Load(start, end, 64, nil)
 }
 
 //NewLoader return fastloader instance
@@ -217,9 +188,15 @@ func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, pro
 	return loader
 }
 
-//Load return reader , resp , rangesize , total , thread , error
-func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
+//Load return reader , resp , rangesize , total , thread , error ; low should be 16 - 128 bigger means timeout quickly on low speed , when use mirrors , it should be bigger (64-512)
+func (f *Fastloader) Load(start int64, end int64, low int64, mirrors map[string]int) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
+	if low >= 8 && low <= 512 {
+		f.low = low
+	} else {
+		f.low = int64(32 + len(mirrors)*4)
+	}
 	if mirrors != nil && len(mirrors) > 0 {
+		mirrors[f.url] = 1
 		f.mirrors = mirrors
 	}
 	url := f.bestURL()
@@ -279,6 +256,7 @@ func (f *Fastloader) Load(start int64, end int64, mirrors map[string]int) (io.Re
 		var playno = f.current
 		go func() {
 			data, err := f.getItem(resp, f.start, f.start+f.thunk, playno, url)
+			resp.Body.Close()
 			f.tasks <- &loadertask{data: data, playno: playno, err: err, url: url}
 		}()
 		f.current++
@@ -343,8 +321,8 @@ func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 
 func (f *Fastloader) bestURL() string {
 	if f.mirrors != nil {
-		u := &mirrorValue{}
 		f.mirrorLock.Lock()
+		u := &mirrorValue{}
 		for k, v := range f.mirrors {
 			if u.url == "" || v > u.value {
 				u.url = k
@@ -362,7 +340,6 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 	var (
 		extraHeader = http.Header{}
 		timeout     int64
-		low         int64 = 16
 		resp        *http.Response
 		err         error
 		trytimes    uint8
@@ -374,7 +351,7 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 	}
 	if end > start && start >= 0 {
 		extraHeader.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
-		timeout = (end - start) / 1024 / low
+		timeout = (end - start) / 1024 / f.low
 	} else if start == 0 && end == 0 {
 		extraHeader.Del("Range")
 		timeout = 7200
@@ -384,8 +361,8 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 	} else {
 		return nil, fmt.Errorf("%s : bad range arguements %d-%d ", url, start, end)
 	}
-	if timeout < 30 {
-		timeout = 30
+	if timeout < 10 {
+		timeout = 10
 	}
 	for {
 		resp, err = NewClient(url, reqMethod, extraHeader, timeout, nil, f.transport)
