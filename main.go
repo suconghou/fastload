@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"time"
 
 	"github.com/suconghou/fastload/fastload"
 	"github.com/suconghou/fastload/util"
@@ -118,15 +119,17 @@ func serve() error {
 	http.HandleFunc(upath, func(w http.ResponseWriter, r *http.Request) {
 		ID := util.Uqid()
 		util.Log.Printf("serve for id %x", ID)
+		startTime := time.Now()
 		n, err := fastServe(w, r, url, thread, thunk, r.Header, start, end, mirrors)
-		util.Log.Printf("ID %x : %d bytes %s", ID, n, utilgo.BoolString(err == nil, "ok", "error"))
+		speed := float64(n/1024) / time.Since(startTime).Seconds()
+		util.Log.Printf("id %x transfered %s @ %.2fKB/s %s", ID, utilgo.ByteFormat(uint64(n)), speed, utilgo.BoolString(err == nil, "", "canceled"))
 	})
 	util.Log.Printf("Starting up on port %s\nPath regist %s", port, upath)
 	return http.ListenAndServe(":"+port, nil)
 }
 
 func fastServe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, reqHeader http.Header, start int64, end int64, mirrors map[string]int) (int64, error) {
-	loader := fastload.NewLoader(url, thread, thunk, reqHeader, nil, nil, os.Stderr)
+	loader := fastload.NewLoader(url, thread, thunk, reqHeader, nil, nil, nil)
 	reader, resp, _, _, _, err := loader.Load(start, end, int64(32+len(mirrors)*2), mirrors)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

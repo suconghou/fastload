@@ -134,7 +134,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		case <-f.ctx.Done():
 			return 0, io.ErrUnexpectedEOF
 		case task := <-f.tasks:
-			f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
+			// f.logger.Printf("%s : got part %d , waiting for part %d", task.url, task.playno, f.played)
 			f.dataMap[task.playno] = task
 			if _, ok := f.dataMap[f.played]; ok {
 				return 0, nil
