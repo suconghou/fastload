@@ -14,17 +14,11 @@ import (
 
 var (
 	// Log to stdout
-	Log    = log.New(os.Stdout, "", 0)
-	urlReg = regexp.MustCompile(`^(?i:https?)://[[:print:]]+$`)
-	rfull  = regexp.MustCompile(`^--range:(\d+)-(\d+)$`)
-	rhalf  = regexp.MustCompile(`^--range:(\d+)-$`)
-	ops    uint64
+	Log   = log.New(os.Stdout, "", 0)
+	rfull = regexp.MustCompile(`^--range:(\d+)-(\d+)$`)
+	rhalf = regexp.MustCompile(`^--range:(\d+)-$`)
+	ops   uint64
 )
-
-// IsURL strict match
-func IsURL(url string) bool {
-	return urlReg.MatchString(url)
-}
 
 // GetMirrors get mirrors
 func GetMirrors() map[string]int {
@@ -35,7 +29,7 @@ func GetMirrors() map[string]int {
 			if item == "--mirrors" {
 				found = true
 			}
-		} else if IsURL(item) {
+		} else if utilgo.IsURL(item, true) {
 			mirrors[item] = 1
 		}
 	}
@@ -51,8 +45,8 @@ func Uqid() uint64 {
 	return atomic.LoadUint64(&ops)
 }
 
-// LogWgetInfo use log print wget info
-func LogWgetInfo(start int64, end int64, thread int32, thunk int64, total int64, filesize int64, fName string) {
+// GetWgetInfo return wget stat info
+func GetWgetInfo(start int64, end int64, thread int32, thunk int64, total int64, filesize int64, fName string) string {
 	var (
 		startstr    string
 		thunkstr    string
@@ -67,7 +61,12 @@ func LogWgetInfo(start int64, end int64, thread int32, thunk int64, total int64,
 	if total > 0 && filesize > 0 {
 		showsizestr = fmt.Sprintf(",大小%s/%s(%d/%d)", utilgo.ByteFormat(uint64(total)), utilgo.ByteFormat(uint64(filesize)), total, filesize)
 	}
-	Log.Printf("%s\n线程%d%s%s%s", fName, thread, thunkstr, showsizestr, startstr)
+	return fmt.Sprintf("%s\n线程%d%s%s%s", fName, thread, thunkstr, showsizestr, startstr)
+}
+
+// GetWgetStat return task end stat info
+func GetWgetStat(n int64, total int64) string {
+	return fmt.Sprintf("\n下载完毕,%d%s", n, utilgo.BoolString(total > 0, fmt.Sprintf("/%d", total), ""))
 }
 
 // ParseCookieUaRefer return http.Header

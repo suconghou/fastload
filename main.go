@@ -5,17 +5,16 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"time"
 
 	"github.com/suconghou/fastload/fastload"
+	"github.com/suconghou/fastload/fastloader"
 	"github.com/suconghou/fastload/util"
 	"github.com/suconghou/utilgo"
 )
 
 var (
-	errArgs    = fmt.Errorf("参数错误")
-	errAlready = fmt.Errorf("该文件已经下载完毕")
+	errArgs = fmt.Errorf("参数错误")
 )
 
 func main() {
@@ -49,7 +48,7 @@ func daemon() error {
 
 func wget() error {
 	url := os.Args[2]
-	if !util.IsURL(url) {
+	if !utilgo.IsURL(url, true) {
 		return errArgs
 	}
 	saveas, err := utilgo.GetStorePath(url)
@@ -61,39 +60,12 @@ func wget() error {
 		return err
 	}
 	defer file.Close()
-
-	var (
-		reqHeader                 = util.ParseCookieUaRefer()
-		thread, thunk, start, end = util.ParseThreadThunkStartEnd(8, 2097152, -1, 0)
-		mirrors                   = util.GetMirrors()
-		progress                  = utilgo.ProgressBar(path.Base(file.Name()), "", nil, nil)
-	)
-	if start != fstart && start == -1 {
-		start = fstart
-	}
-
-	loader := fastload.NewLoader(url, thread, thunk, reqHeader, progress, nil, nil)
-	reader, _, total, filesize, threadreal, err := loader.Load(start, end, int64(32+len(mirrors)*2), mirrors)
-	if err != nil {
-		if err == io.EOF {
-			return errAlready
-		}
-		return err
-	}
-	defer reader.Close()
-
-	util.LogWgetInfo(start, end, threadreal, thunk, total, filesize, file.Name())
-	n, err := io.Copy(file, reader)
-	if err != nil {
-		return err
-	}
-	util.Log.Printf("\n下载完毕,%d%s", n, utilgo.BoolString(total > 0, fmt.Sprintf("/%d", total), ""))
-	return nil
+	return fastloader.Load(file, url, fstart, nil, os.Stdout, nil)
 }
 
 func serve() error {
 	url := os.Args[2]
-	if !util.IsURL(url) {
+	if !utilgo.IsURL(url, true) {
 		return errArgs
 	}
 	var (
