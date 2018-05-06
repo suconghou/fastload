@@ -102,7 +102,7 @@ func serve() error {
 				stat = err.Error()
 			}
 		}
-		util.Log.Printf("id %x transfered %s @ %.2fKB/s %s", ID, utilgo.ByteFormat(uint64(n)), speed, st)
+		util.Log.Printf("id %x transfered %s @ %.2fKB/s %s", ID, utilgo.ByteFormat(uint64(n)), speed, stat)
 	})
 	util.Log.Printf("Starting up on port %s\nPath regist %s", port, upath)
 	return http.ListenAndServe(":"+port, nil)
