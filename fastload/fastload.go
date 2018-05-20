@@ -17,18 +17,11 @@ import (
 )
 
 var (
-	rangexp   = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
-	rangefile = regexp.MustCompile(`\d+/(\d+)`)
-	bytePool  = sync.Pool{
-		New: func() interface{} {
-			b := make([]byte, 32768)
-			return &b
-		},
-	}
+	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
 	bufferPool = sync.Pool{
 		New: func() interface{} {
-			b := bytes.NewBuffer(make([]byte, 262144))
-			return b
+			return bytes.NewBuffer(make([]byte, 0, 262144))
 		},
 	}
 	// ErrCanceled flag this is user canceled
@@ -402,13 +395,13 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) (*bytes.Buffer, error) {
 	var (
 		data      = bufferPool.Get().(*bytes.Buffer)
-		buf       = bytePool.Get().(*[]byte)
 		trytimes  uint8
 		cstart    int64
 		errmsg    string
 		rangesize = end - start
 		r         io.Reader
 	)
+	data.Reset()
 	defer resp.Body.Close()
 	if playno == 0 {
 		r = io.LimitReader(resp.Body, rangesize)
@@ -420,12 +413,10 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		case <-f.ctx.Done():
 			data.Reset()
 			bufferPool.Put(data)
-			*buf = (*buf)[:cap(*buf)]
-			bytePool.Put(buf)
 			runtime.Goexit()
 		default:
 		}
-		n, err := io.CopyBuffer(data, r, *buf)
+		n, err := io.CopyN(data, r, 8192)
 		if n > 0 {
 			if f.progress != nil {
 				f.bytesgot <- n
