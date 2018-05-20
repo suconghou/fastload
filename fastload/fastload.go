@@ -113,6 +113,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 			n, err := resource.data.Read(p)
 			f.readed = f.readed + int64(n)
 			if resource.data.Len() == 0 {
+				resource.data.Reset()
 				bufferPool <- resource.data
 				if f.played > 0 && f.played == f.endno && resource.err == nil {
 					if f.progress != nil {
@@ -294,7 +295,8 @@ func (f *Fastloader) Load(start int64, end int64, low int64, mirrors map[string]
 }
 
 func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
-	rangeStr := f.reqHeader.Get("Range")
+	const r = "Range"
+	rangeStr := f.reqHeader.Get(r)
 	if rangexp.MatchString(rangeStr) {
 		var (
 			fstart int64
@@ -318,6 +320,7 @@ func (f *Fastloader) fixstartend(start int64, end int64) (int64, int64) {
 		}
 		return fstart, fend
 	}
+	f.reqHeader.Del(r)
 	return start, end
 }
 

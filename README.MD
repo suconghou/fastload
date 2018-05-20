@@ -11,7 +11,6 @@ mirror download
 
 ### API 
 
-there are two api totally 
 
 `fastload.Get()` for quick start
 
@@ -21,10 +20,7 @@ there are two api totally
 
 ### the quick way
 
-
-
-
-### the hard way
+see `fastloader.go` for detail
 
 
 ### cli command 
@@ -63,6 +59,16 @@ fastload serve http://xxx.com/file
 --path 
 
 
+`/tmp/1`
+```
+http://mirror1/file.mp4
+http://mirror2/file.mp4
+http://mirror3/file.mp4
+```
+
+```
+fastload serve http://url/file.mp4 --path /hello.mp4 --slim --mirrors $(cat /tmp/1 | xargs)
+```
 
 ### others
 
