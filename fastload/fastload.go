@@ -28,7 +28,7 @@ var (
 	bufferPool = sync.Pool{
 		New: func() interface{} {
 			b := bytes.NewBuffer(make([]byte, 262144))
-			return &b
+			return b
 		},
 	}
 	// ErrCanceled flag this is user canceled
@@ -420,7 +420,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		case <-f.ctx.Done():
 			data.Reset()
 			bufferPool.Put(data)
-			*buf = (*buf)[:0]
+			*buf = (*buf)[:cap(*buf)]
 			bytePool.Put(buf)
 			runtime.Goexit()
 		default:
