@@ -17,9 +17,20 @@ import (
 )
 
 var (
-	rangexp    = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
-	rangefile  = regexp.MustCompile(`\d+/(\d+)`)
-	bufferPool = make(chan *bytes.Buffer, 128)
+	rangexp   = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
+	rangefile = regexp.MustCompile(`\d+/(\d+)`)
+	bytePool  = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, 32768)
+			return &b
+		},
+	}
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			b := bytes.NewBuffer(make([]byte, 262144))
+			return &b
+		},
+	}
 	// ErrCanceled flag this is user canceled
 	ErrCanceled = fmt.Errorf("canceled")
 )
@@ -114,7 +125,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 			f.readed = f.readed + int64(n)
 			if resource.data.Len() == 0 {
 				resource.data.Reset()
-				bufferPool <- resource.data
+				bufferPool.Put(resource.data)
 				if f.played > 0 && f.played == f.endno && resource.err == nil {
 					if f.progress != nil {
 						f.progress(f.loaded, f.readed, f.total, f.start, f.end)
@@ -152,7 +163,7 @@ func (f *Fastloader) Close() error {
 	for _, item := range f.dataMap {
 		if item.data != nil {
 			item.data.Reset()
-			bufferPool <- item.data
+			bufferPool.Put(item.data)
 		}
 	}
 	f.dataMap = nil
@@ -390,18 +401,14 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 
 func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno int32, url string) (*bytes.Buffer, error) {
 	var (
-		data      *bytes.Buffer
+		data      = bufferPool.Get().(*bytes.Buffer)
+		buf       = bytePool.Get().(*[]byte)
 		trytimes  uint8
 		cstart    int64
 		errmsg    string
 		rangesize = end - start
 		r         io.Reader
 	)
-	select {
-	case data = <-bufferPool:
-	default:
-		data = bytes.NewBuffer(make([]byte, 0, 262144))
-	}
 	defer resp.Body.Close()
 	if playno == 0 {
 		r = io.LimitReader(resp.Body, rangesize)
@@ -412,11 +419,13 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		select {
 		case <-f.ctx.Done():
 			data.Reset()
-			bufferPool <- data
+			bufferPool.Put(data)
+			*buf = (*buf)[:0]
+			bytePool.Put(buf)
 			runtime.Goexit()
 		default:
 		}
-		n, err := io.CopyN(data, r, 65536)
+		n, err := io.CopyBuffer(data, r, *buf)
 		if n > 0 {
 			if f.progress != nil {
 				f.bytesgot <- n
