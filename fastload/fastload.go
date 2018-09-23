@@ -383,6 +383,11 @@ func (f *Fastloader) loadItem(url string, start int64, end int64) (*http.Respons
 	if err != nil {
 		return resp, err
 	}
+	if resp.StatusCode != 206 && start != 0 && end != 0 {
+		// 服务器端对于range请求应返回206
+		fmt.Println(extraHeader, start, end, resp)
+		panic("http response error, expect 206")
+	}
 	if respOk(resp) {
 		return resp, nil
 	} else if respEnd(resp) {
@@ -400,13 +405,19 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		errmsg    string
 		rangesize = end - start
 		r         io.Reader
+		b         bytes.Buffer
 	)
 	data.Reset()
+	b.WriteString(fmt.Sprintf("init data len %d \r\n", data.Len()))
 	defer resp.Body.Close()
 	if playno == 0 {
 		r = io.LimitReader(resp.Body, rangesize)
 	} else {
 		r = resp.Body
+		if resp.StatusCode != 206 {
+			fmt.Println(resp)
+			panic("err resp")
+		}
 	}
 	for {
 		select {
@@ -417,6 +428,7 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		default:
 		}
 		n, err := io.CopyN(data, r, 8192)
+		b.WriteString(fmt.Sprintf("data len %d \r\n", data.Len()))
 		if n > 0 {
 			if f.progress != nil {
 				f.bytesgot <- n
@@ -448,6 +460,8 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 			value = -4
 			waitValue = 200
 		}
+		b.WriteString(errmsg)
+
 		f.logger.Printf(errmsg)
 		if f.mirrors != nil {
 			f.mirror <- &mirrorValue{url, value}
@@ -458,6 +472,14 @@ func (f *Fastloader) getItem(resp *http.Response, start int64, end int64, playno
 		time.Sleep(time.Millisecond * waitValue)
 		cstart = start + int64(data.Len())
 		url = f.bestURL()
+		if cstart > end && end > 0 {
+			fmt.Println(data.Len(), rangesize)
+			fmt.Println(b.String())
+			fmt.Println(resp)
+			panic("bad rang")
+		} else {
+			b.WriteString(fmt.Sprintf("new resp %d %d \r\n", cstart, end))
+		}
 		resp, err = f.loadItem(url, cstart, end)
 		if err != nil {
 			if f.mirrors != nil {
