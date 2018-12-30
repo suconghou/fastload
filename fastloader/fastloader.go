@@ -34,8 +34,8 @@ func Load(file *os.File, url string, fstart int64, transport *http.Transport, wr
 	if start != fstart && start == -1 {
 		start = fstart
 	}
-	loader := fastload.NewLoader(url, thread, thunk, reqHeader, progress, transport, nil)
-	reader, _, total, filesize, threadreal, err := loader.Load(start, end, int64(32+len(mirrors)*2), mirrors)
+	loader := fastload.NewLoader(url, thread, thunk, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
+	reader, _, total, filesize, threadreal, err := loader.Load(start, end, uint8(32+len(mirrors)*2), mirrors)
 	if err != nil {
 		if err == io.EOF {
 			return errAlready

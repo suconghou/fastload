@@ -110,7 +110,7 @@ func serve() error {
 
 func fastServe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, reqHeader http.Header, start int64, end int64, mirrors map[string]int) (int64, error) {
 	loader := fastload.NewLoader(url, thread, thunk, reqHeader, nil, nil, nil)
-	reader, resp, _, _, _, err := loader.Load(start, end, int64(32+len(mirrors)*2), mirrors)
+	reader, resp, _, _, _, err := loader.Load(start, end, uint8(32+len(mirrors)*2), mirrors)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err

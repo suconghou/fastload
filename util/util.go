@@ -94,6 +94,8 @@ func ParseThreadThunkStartEnd(thread int32, thunk int64, start int64, end int64)
 		thread = thread * 2
 	} else if utilgo.HasFlag("--slow") {
 		thread = thread / 2
+	} else if utilgo.HasFlag("--single") {
+		thread = 1
 	}
 	if utilgo.HasFlag("--thin") {
 		thunk = thunk / 8
