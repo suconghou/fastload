@@ -91,7 +91,9 @@ func doRequestGetBuf(ctx context.Context, buf *bytes.Buffer, mirror chan<- *mirr
 		time.Sleep(time.Millisecond)
 	}
 	if !statusOk {
-		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		if err != nil {
+			return bytesread, err
+		} else if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			return bytesread, io.EOF
 		}
 		return bytesread, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)

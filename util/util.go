@@ -78,7 +78,7 @@ func ParseCookieUaRefer() http.Header {
 	if value, err := utilgo.GetParam("--ua"); err == nil {
 		reqHeader.Add("User-Agent", value)
 	} else {
-		reqHeader.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36")
+		reqHeader.Add("User-Agent", "curl/7.54.0")
 	}
 	if value, err := utilgo.GetParam("--refer"); err == nil {
 		reqHeader.Add("Referer", value)
