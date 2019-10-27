@@ -35,9 +35,6 @@ func request(urlStr string, method string, body io.Reader, reqHeader http.Header
 		host := urlInfo.Hostname()
 		urlIP := strings.Replace(urlStr, host, ip, 1)
 		req, err = http.NewRequest(method, urlIP, body)
-		if err != nil {
-			return req, err
-		}
 		req.Host = host
 	} else {
 		req, err = http.NewRequest(method, urlStr, body)
@@ -88,17 +85,17 @@ func doRequestGetBuf(ctx context.Context, buf *bytes.Buffer, mirror chan<- *mirr
 			break
 		}
 		times++
-		time.Sleep(time.Millisecond)
 	}
+	if err != nil {
+		return bytesread, err
+	}
+	defer resp.Body.Close()
 	if !statusOk {
-		if err != nil {
-			return bytesread, err
-		} else if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			return bytesread, io.EOF
 		}
 		return bytesread, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)
 	}
-	defer resp.Body.Close()
 	if limit > 0 {
 		r = io.LimitReader(resp.Body, limit)
 	} else {

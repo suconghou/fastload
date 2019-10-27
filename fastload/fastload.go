@@ -10,10 +10,10 @@ import (
 	"math/rand"
 	"net/http"
 	"regexp"
-	"runtime"
 	"strconv"
 	"sync"
-	"time"
+
+	"github.com/suconghou/utilgo/pool"
 )
 
 var (
@@ -34,7 +34,6 @@ const (
 
 // Fastloader instance
 type Fastloader struct {
-	url        string
 	mirrors    map[string]int
 	mirror     chan *mirrorValue
 	mirrorLock *sync.Mutex
@@ -49,12 +48,10 @@ type Fastloader struct {
 	low        uint8 // 超时系数 (最低允许速度,KB)
 	reqHeader  http.Header
 	logger     *log.Logger
-	current    int32
 	played     int32
 	endno      int32
-	tasks      chan *loadertask
-	jobs       chan *loaderjob
-	dataMap    map[int32]*loadertask
+	taskres    chan *taskres
+	dataMap    map[int32]*taskres
 	bytesgot   chan int64
 	cancel     context.CancelFunc
 	ctx        context.Context
@@ -62,24 +59,19 @@ type Fastloader struct {
 	progress   func(received int64, readed int64, total int64, start int64, end int64)
 	ips        []string
 	ipchan     chan string
+	pool       *pool.GoPool
 }
 
-type loadertask struct {
+type taskres struct {
 	data   *bytes.Buffer
 	playno int32
 	err    error
 }
 
-type loaderjob struct {
-	playno int32
-	start  int64
-	end    int64
-}
-
 type writeCounter struct {
-	instance *Fastloader
-	readed   int64
-	origin   io.ReadCloser
+	loader *Fastloader
+	readed int64
+	r      io.ReadCloser
 }
 
 type mirrorValue struct {
@@ -87,25 +79,26 @@ type mirrorValue struct {
 	value int
 }
 
-func (wc *writeCounter) Read(p []byte) (int, error) {
-	n, err := wc.origin.Read(p)
-	wc.readed += int64(n)
-	if wc.instance.progress != nil {
-		total := wc.instance.total
+func (w *writeCounter) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	w.readed += int64(n)
+	if w.loader.progress != nil {
+		total := w.loader.total
 		if total == 0 {
+			// 当获取不到文件总大小时,采用模拟值
 			if err == io.EOF {
-				total = wc.readed
+				total = w.readed
 			} else {
-				total = wc.readed * 2
+				total = w.readed * 2
 			}
 		}
-		wc.instance.progress(wc.readed, wc.readed, total, 0, total)
+		w.loader.progress(w.readed, w.readed, total, 0, total)
 	}
 	return n, err
 }
 
-func (wc *writeCounter) Close() error {
-	return wc.origin.Close()
+func (w *writeCounter) Close() error {
+	return w.r.Close()
 }
 
 func (f *Fastloader) Read(p []byte) (int, error) {
@@ -141,7 +134,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 		select {
 		case <-f.ctx.Done():
 			return 0, ErrCanceled
-		case task := <-f.tasks:
+		case task := <-f.taskres:
 			f.dataMap[task.playno] = task
 			if _, ok := f.dataMap[f.played]; ok {
 				return 0, nil
@@ -164,32 +157,41 @@ func (f *Fastloader) Close() error {
 }
 
 //Get load with certain ua and thread thunk
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
-	reqHeader := http.Header{}
-	return NewLoader(url, 4, 524288, reqHeader, progress, nil, logger).Load(start, end, 64, nil)
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, http.Header, int64, int64, int32, error) {
+	return NewLoader(map[string]int{url: 1}, 4, 524288, 4, nil, progress, nil, logger).Load(start, end)
 }
 
 // NewLoader return new loader instance
-func NewLoader(url string, thread int32, thunk int64, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, logger *log.Logger) *Fastloader {
+func NewLoader(mirrors map[string]int, thread int32, thunk int64, low uint8, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, logger *log.Logger) *Fastloader {
+	if reqHeader == nil {
+		reqHeader = http.Header{}
+	}
 	if logger == nil {
 		logger = log.New(ioutil.Discard, "", log.Lshortfile|log.LstdFlags)
 	}
+	if low < 2 {
+		low = 2
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fastloader{
-		url:       url,
 		thread:    thread,
 		thunk:     thunk,
 		progress:  progress,
 		reqHeader: reqHeader,
 		transport: transport,
 		logger:    logger,
-		tasks:     make(chan *loadertask, thread),
-		bytesgot:  make(chan int64, thread*100),
-		jobs:      make(chan *loaderjob, thread),
-		dataMap:   make(map[int32]*loadertask),
+		taskres:   make(chan *taskres, thread),
+		bytesgot:  make(chan int64, thread),
+		dataMap:   make(map[int32]*taskres),
 
-		cancel: cancel,
-		ctx:    ctx,
+		cancel:     cancel,
+		ctx:        ctx,
+		low:        low,
+		mirrors:    mirrors,
+		mirror:     make(chan *mirrorValue, thread),
+		mirrorLock: &sync.Mutex{},
+
+		pool: pool.New(thread, 5),
 	}
 }
 
@@ -206,24 +208,15 @@ func (f *Fastloader) PutIPs(ips []string, lock bool) {
 }
 
 //Load return reader , resp , rangesize , total , thread , error ; low should be 16 - 128 bigger means timeout quickly on low speed , when use mirrors , it should be bigger (64-512)
-func (f *Fastloader) Load(start int64, end int64, low uint8, mirrors map[string]int) (io.ReadCloser, *http.Response, int64, int64, int32, error) {
-	f.low = low
-	if mirrors != nil && len(mirrors) > 0 {
-		mirrors[f.url] = 1
-		f.mirrors = mirrors
-		f.mirror = make(chan *mirrorValue, f.thread)
-		f.mirrorLock = &sync.Mutex{}
-	}
+func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, int64, int64, int32, error) {
 	urlStr := f.bestURL()
-	// 如果f.reqHeader 里包含了start,end, 则以reqHeader里的为准
-	if rangeStr := f.reqHeader.Get("Range"); rangeStr != "" && rangeReqReg.MatchString(rangeStr) {
-		start, end = getReqStartEnd(rangeStr)
-	}
+	// 如果f.reqHeader 里包含了start,end,且参数未指明start,end, 则以reqHeader里的为准
+	start, end = reGetFetchSegment(f.reqHeader, start, end)
 	// 发起一个普通请求,验证是否支持断点续传
+	const r = "Range"
 	var (
 		reqHeader = cloneHeader(f.reqHeader)
 		timeout   int64
-		r         = "Range"
 	)
 	if end > start && start >= 0 {
 		reqHeader.Set(r, fmt.Sprintf("bytes=%d-%d", start, end-1))
@@ -236,128 +229,97 @@ func (f *Fastloader) Load(start int64, end int64, low uint8, mirrors map[string]
 	}
 	resp, statusOk, err := doRequest(urlStr, reqMethod, reqHeader, timeout, nil, f.transport, "")
 	if err != nil {
-		return nil, resp, 0, 0, 0, err
+		return nil, nil, 0, 0, 0, err
 	}
 	if !statusOk {
+		resp.Body.Close()
 		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-			return nil, resp, 0, 0, 0, io.EOF
+			return nil, resp.Header, 0, 0, 0, io.EOF
 		}
-		return nil, resp, 0, 0, 0, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)
+		return nil, resp.Header, 0, 0, 0, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)
 	}
 	// 需假设服务器都正确的返回了ContentLength,f.total 必然为正整数
-	f.total = resp.ContentLength
-	if !resp.ProtoAtLeast(1, 1) {
-		return &writeCounter{instance: f, origin: resp.Body}, resp, resp.ContentLength, resp.ContentLength, 1, nil
-	}
 	f.start = start
-	f.filesize = getFileSizeFromResp(resp)
+	f.filesize, f.total = getSizeFromResp(resp)
+	if !resp.ProtoAtLeast(1, 1) {
+		return &writeCounter{loader: f, r: resp.Body}, resp.Header, f.total, f.filesize, 1, nil
+	}
+	resp.Body.Close()
 	// 当用户设置的end明显不对,(我们已经获取了length),自动修正这个错误
 	if end > f.total+f.start || end <= 0 {
 		end = f.total + f.start
 	}
 	f.end = end
-	if f.progress != nil {
-		go func() {
-			for {
-				select {
-				case <-f.ctx.Done():
-					return
-				case n := <-f.bytesgot:
-					f.loaded = f.loaded + n
+
+	// 进度条
+	go func() {
+		for {
+			select {
+			case <-f.ctx.Done():
+				return
+			case n := <-f.bytesgot:
+				f.loaded += n
+				if f.progress != nil {
 					f.progress(f.loaded, f.readed, f.total, f.start, f.end)
-					if f.start+f.loaded >= f.end {
-						return
-					}
 				}
-			}
-		}()
-	}
-	if f.mirrors != nil {
-		go func() {
-			for {
-				select {
-				case <-f.ctx.Done():
+				if f.start+f.loaded >= f.end {
 					return
-				case v := <-f.mirror:
-					f.mirrorLock.Lock()
-					f.mirrors[v.url] += v.value
-					f.mirrorLock.Unlock()
 				}
 			}
-		}()
-	}
+		}
+	}()
+	//镜像统计
+	go func() {
+		for {
+			select {
+			case <-f.ctx.Done():
+				return
+			case v := <-f.mirror:
+				f.mirrorLock.Lock()
+				f.mirrors[v.url] += v.value
+				f.mirrorLock.Unlock()
+			}
+		}
+	}()
 	// 开始派发任务
 	go func() {
-		var workerNum int32
+		var curr int32
 		for {
-			if workerNum < f.thread {
-				go f.worker(workerNum)
-				workerNum++
-			}
-			cstart := int64(f.current)*f.thunk + f.start
-			cend := cstart + f.thunk
-			if cend >= f.end {
-				cend = f.end
-				f.endno = f.current
+			start := int64(curr)*f.thunk + f.start
+			end := start + f.thunk
+			if end >= f.end {
+				end = f.end
+				f.endno = curr
 			}
 			select {
 			case <-f.ctx.Done():
 				return
-			case f.jobs <- &loaderjob{start: cstart, end: cend, playno: f.current}:
+			default:
+				f.pool.Put(func() {
+					f.doTask(start, end, curr)
+				})
 			}
 			if f.endno > 0 {
-				close(f.jobs)
 				return
 			}
-			f.current++
+			curr++
 		}
 	}()
-	return f, resp, f.total, f.filesize, f.thread, nil
+	return f, resp.Header, f.total, f.filesize, f.thread, nil
 }
 
 func (f *Fastloader) bestURL() string {
-	if f.mirrors != nil {
-		f.mirrorLock.Lock()
-		u := &mirrorValue{}
-		for k, v := range f.mirrors {
-			if u.url == "" || v > u.value {
-				u.url = k
-				u.value = v
-			}
-		}
-		f.mirrors[u.url]--
-		f.mirrorLock.Unlock()
-		return u.url
-	}
-	return f.url
-}
-
-func getReqStartEnd(rangeStr string) (int64, int64) {
-	var (
-		start   int64
-		end     int64
-		matches []string
-	)
-	matches = rangeReqReg.FindStringSubmatch(rangeStr)
-	start, _ = strconv.ParseInt(matches[1], 10, 64)
-	if matches[2] != "" {
-		end, _ = strconv.ParseInt(matches[2], 10, 64)
-	} else {
-		end = 0
-	}
-	return start, end
-}
-
-func getFileSizeFromResp(resp *http.Response) int64 {
-	var filesize = resp.ContentLength
-	if resp.StatusCode == http.StatusPartialContent {
-		cr := resp.Header.Get("Content-Range")
-		if rangeResReg.MatchString(cr) {
-			matches := rangeResReg.FindStringSubmatch(cr)
-			filesize, _ = strconv.ParseInt(matches[1], 10, 64)
+	f.mirrorLock.Lock()
+	u := &mirrorValue{}
+	for k, v := range f.mirrors {
+		if u.url == "" || v > u.value {
+			u.url = k
+			u.value = v
 		}
 	}
-	return filesize
+	f.mirrors[u.url]--
+	f.mirrorLock.Unlock()
+	return u.url
 }
 
 // 三种情况, 1.有锁IP,2无所IP,3.不使用IP
@@ -371,14 +333,14 @@ func (f *Fastloader) getIP() string {
 	return ""
 }
 
-// requestItem 必须完成下载一段,会自动调度url
+// requestItem 由loadItem 多次调度,切换IP和URL,必须完成下载一段
 func (f *Fastloader) requestItem(buf *bytes.Buffer, urlStr string, start int64, end int64, ip string) (int64, error) {
+	const r = "Range"
 	var (
 		reqHeader = cloneHeader(f.reqHeader)
 		timeout   int64
 		body      io.Reader
 		limit     int64
-		r         = "Range"
 	)
 	if end > start && start >= 0 {
 		reqHeader.Set(r, fmt.Sprintf("bytes=%d-%d", start, end-1))
@@ -399,50 +361,66 @@ func (f *Fastloader) requestItem(buf *bytes.Buffer, urlStr string, start int64, 
 	return doRequestGetBuf(f.ctx, buf, f.mirror, f.bytesgot, urlStr, reqMethod, reqHeader, timeout, body, f.transport, ip, 3, limit)
 }
 
+// loadItem 调度,确保 start,end段被顺利下载
 func (f *Fastloader) loadItem(urlStr string, start int64, end int64, ip string) (*bytes.Buffer, error) {
 	var (
 		buf      = bufferPool.Get().(*bytes.Buffer)
 		err      error
 		n        int64
-		maxtimes = 6
+		maxtimes = 3
 		trytimes = 0
 	)
 	buf.Reset()
 	for {
 		n, err = f.requestItem(buf, urlStr, start, end, ip)
 		if err == nil {
-			return buf, err
+			return buf, nil
 		}
 		trytimes++
 		if trytimes > maxtimes {
 			return buf, err
 		}
 		urlStr = f.bestURL()
+		ip = f.getIP()
 		start += n
 	}
 }
 
-// worker 全部运行在协程内
-func (f *Fastloader) worker(no int32) {
-	for {
-		select {
-		case <-f.ctx.Done():
-			runtime.Goexit()
-		case job, more := <-f.jobs:
-			if !more {
-				runtime.Goexit()
-			}
-			// 现在执行的任务与需要等待的任务差距太大,放缓执行
-			if job.playno-f.played > 4*f.thread {
-				time.Sleep(time.Duration(job.playno-f.played) * time.Millisecond)
-			}
-			urlStr := f.bestURL()
-			ip := f.getIP()
-			buf, err := f.loadItem(urlStr, job.start, job.end, ip)
-			f.tasks <- &loadertask{data: buf, playno: job.playno, err: err}
-			if f.ipchan != nil {
-				f.ipchan <- ip
-			}
+// doTask 全部运行在协程内
+func (f *Fastloader) doTask(start int64, end int64, playno int32) {
+	buf, err := f.loadItem(f.bestURL(), start, end, f.getIP())
+	f.taskres <- &taskres{data: buf, playno: playno, err: err}
+}
+
+// 下面辅助函数
+
+func reGetFetchSegment(reqHeader http.Header, start int64, end int64) (int64, int64) {
+	if start > 0 || end > 0 {
+		return start, end
+	}
+	if str := reqHeader.Get("Range"); str != "" && rangeReqReg.MatchString(str) {
+		matches := rangeReqReg.FindStringSubmatch(str)
+		start, _ = strconv.ParseInt(matches[1], 10, 64)
+		if matches[2] != "" {
+			end, _ = strconv.ParseInt(matches[2], 10, 64)
+		} else {
+			end = 0
 		}
 	}
+	return start, end
+}
+
+func getSizeFromResp(resp *http.Response) (int64, int64) {
+	var (
+		total    = resp.ContentLength
+		filesize = resp.ContentLength
+	)
+	if resp.StatusCode == http.StatusPartialContent {
+		cr := resp.Header.Get("Content-Range")
+		if rangeResReg.MatchString(cr) {
+			matches := rangeResReg.FindStringSubmatch(cr)
+			filesize, _ = strconv.ParseInt(matches[1], 10, 64)
+		}
+	}
+	return filesize, total
 }
