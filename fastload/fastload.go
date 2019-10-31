@@ -39,27 +39,35 @@ type Fastloader struct {
 	mirrorLock *sync.Mutex
 	thunk      int64
 	thread     int32
-	total      int64 // 要求下载的大小 range
-	filesize   int64 // 文件的真实大小 根据206 header 匹配
-	loaded     int64
-	readed     int64
-	start      int64
-	end        int64
-	low        uint8 // 超时系数 (最低允许速度,KB)
 	reqHeader  http.Header
-	logger     *log.Logger
-	played     int32
-	endno      int32
-	taskres    chan *taskres
-	dataMap    map[int32]*taskres
-	bytesgot   chan int64
-	cancel     context.CancelFunc
-	ctx        context.Context
 	transport  *http.Transport
-	progress   func(received int64, readed int64, total int64, start int64, end int64)
-	ips        []string
-	ipchan     chan string
 	pool       *pool.GoPool
+
+	logger   *log.Logger
+	bytesgot chan int64
+	progress func(received int64, readed int64, total int64, start int64, end int64)
+
+	cancel context.CancelFunc
+	ctx    context.Context
+
+	taskres chan *taskres
+	dataMap map[int32]*taskres
+
+	start int64
+	end   int64
+	low   uint8 // 超时系数 (最低允许速度,KB)
+
+	total    int64 // 要求下载的大小 根据range,本次任务的content-length
+	filesize int64 // 文件的真实大小 根据206 header 匹配
+
+	loaded int64 // 网络中已接收字节数
+	readed int64 // 已向下级发送的字节数(写盘)
+
+	played int32 // 向下 read 的游标,从0开始计数
+	endno  int32
+
+	ips    []string
+	ipchan chan string
 }
 
 type taskres struct {
@@ -84,7 +92,7 @@ func (w *writeCounter) Read(p []byte) (int, error) {
 	w.readed += int64(n)
 	if w.loader.progress != nil {
 		total := w.loader.total
-		if total == 0 {
+		if total <= 0 {
 			// 当获取不到文件总大小时,采用模拟值
 			if err == io.EOF {
 				total = w.readed
@@ -105,14 +113,15 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	if f.readed == f.total {
 		return 0, io.EOF
 	}
-	if resource, ok := f.dataMap[f.played]; ok {
-		if resource.data != nil && resource.data.Len() > 0 {
-			n, err := resource.data.Read(p)
-			f.readed = f.readed + int64(n)
-			if resource.data.Len() == 0 {
-				resource.data.Reset()
-				bufferPool.Put(resource.data)
-				if f.played > 0 && f.played == f.endno && resource.err == nil {
+	if res, ok := f.dataMap[f.played]; ok {
+		if res.data != nil && res.data.Len() > 0 {
+			n, err := res.data.Read(p)
+			f.readed += int64(n)
+			if res.data.Len() == 0 {
+				res.data.Reset()
+				bufferPool.Put(res.data)
+				if f.played > 0 && f.played == f.endno && res.err == nil {
+					// 本次读取的是最后一块数据,并且都读取完了,块也没有错误,最后更新一下进度条
 					if f.progress != nil {
 						f.progress(f.loaded, f.readed, f.total, f.start, f.end)
 					}
@@ -120,23 +129,27 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 					return n, io.EOF
 				}
 			}
+			// 本次读取后,还没读完,下次继续读取就行了
 			return n, err
-		} else if resource.err != nil { // data is nil & has err, request failed, abort
+		} else if res.err != nil { // data is nil & has err, request failed, abort
 			f.cancel()
-			return 0, resource.err
+			return 0, res.err
 		} else { // data is nil & err is nil, continue
 			delete(f.dataMap, f.played)
 			f.played++
 			return 0, nil
 		}
 	}
+	// 没找到想read的块,就在这里等它
+	// 如果执行Load了,而不去read它,会确保taskres被塞满暂停新线程下载
 	for {
 		select {
 		case <-f.ctx.Done():
 			return 0, ErrCanceled
 		case task := <-f.taskres:
 			f.dataMap[task.playno] = task
-			if _, ok := f.dataMap[f.played]; ok {
+			// 有新的块来了,更新存储桶,如果来的块是要找的块,我们中断,下次调用就会读这个块了
+			if task.playno == f.played {
 				return 0, nil
 			}
 		}
@@ -157,7 +170,7 @@ func (f *Fastloader) Close() error {
 }
 
 //Get load with certain ua and thread thunk
-func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, http.Header, int64, int64, int32, error) {
+func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, http.Header, int64, int64, int, error) {
 	return NewLoader(map[string]int{url: 1}, 4, 524288, 4, nil, progress, nil, logger).Load(start, end)
 }
 
@@ -195,10 +208,11 @@ func NewLoader(mirrors map[string]int, thread int32, thunk int64, low uint8, req
 	}
 }
 
-// PutIPs 设置IP策略
+// PutIPs 设置IP策略, 应在Load之前设置,否则可能引起多线程竞态
+// 参数二可以配置最优模型或随机模型, ips数组内元素可重复,当数组长度小于线程数时,饥饿时将会随机选择
 func (f *Fastloader) PutIPs(ips []string, lock bool) {
 	if lock {
-		f.ipchan = make(chan string, len(ips))
+		f.ipchan = make(chan string, len(ips)*10)
 		for _, ip := range ips {
 			f.ipchan <- ip
 		}
@@ -208,7 +222,7 @@ func (f *Fastloader) PutIPs(ips []string, lock bool) {
 }
 
 //Load return reader , resp , rangesize , total , thread , error ; low should be 16 - 128 bigger means timeout quickly on low speed , when use mirrors , it should be bigger (64-512)
-func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, int64, int64, int32, error) {
+func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, int64, int64, int, error) {
 	urlStr := f.bestURL()
 	// 如果f.reqHeader 里包含了start,end,且参数未指明start,end, 则以reqHeader里的为准
 	start, end = reGetFetchSegment(f.reqHeader, start, end)
@@ -234,15 +248,16 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 	if !statusOk {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-			return nil, resp.Header, 0, 0, 0, io.EOF
+			return nil, resp.Header, 0, 0, resp.StatusCode, io.EOF
 		}
-		return nil, resp.Header, 0, 0, 0, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)
+		return nil, resp.Header, 0, 0, resp.StatusCode, fmt.Errorf("%s:status not ok %d", urlStr, resp.StatusCode)
 	}
 	// 需假设服务器都正确的返回了ContentLength,f.total 必然为正整数
 	f.start = start
+	// filesize 和 total 可能为-1,服务器未指明大小,此时回退到单线程
 	f.filesize, f.total = getSizeFromResp(resp)
-	if !resp.ProtoAtLeast(1, 1) {
-		return &writeCounter{loader: f, r: resp.Body}, resp.Header, f.total, f.filesize, 1, nil
+	if !resp.ProtoAtLeast(1, 1) || (f.filesize == -1 && f.total == -1) {
+		return &writeCounter{loader: f, r: resp.Body}, resp.Header, f.total, f.filesize, resp.StatusCode, nil
 	}
 	resp.Body.Close()
 	// 当用户设置的end明显不对,(我们已经获取了length),自动修正这个错误
@@ -295,17 +310,19 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 			case <-f.ctx.Done():
 				return
 			default:
-				f.pool.Put(func() {
-					f.doTask(start, end, curr)
-				})
+				func(index int32) {
+					f.pool.Put(func() {
+						f.doTask(start, end, index)
+					})
+				}(curr)
 			}
-			if f.endno > 0 {
+			if end >= f.end {
 				return
 			}
 			curr++
 		}
 	}()
-	return f, resp.Header, f.total, f.filesize, f.thread, nil
+	return f, resp.Header, f.total, f.filesize, resp.StatusCode, nil
 }
 
 func (f *Fastloader) bestURL() string {
@@ -322,10 +339,15 @@ func (f *Fastloader) bestURL() string {
 	return u.url
 }
 
-// 三种情况, 1.有锁IP,2无所IP,3.不使用IP
-func (f *Fastloader) getIP() string {
+// 三种情况, 1.优选IP,2随机IP,3.不使用IP
+func (f *Fastloader) bestIP() string {
 	if f.ipchan != nil {
-		return <-f.ipchan
+		select {
+		case ip := <-f.ipchan:
+			return ip
+		default:
+			return f.ips[rand.Intn(len(f.ips))]
+		}
 	} else if f.ips != nil {
 		i := rand.Intn(len(f.ips))
 		return f.ips[i]
@@ -353,17 +375,19 @@ func (f *Fastloader) requestItem(buf *bytes.Buffer, urlStr string, start int64, 
 		reqHeader.Set(r, fmt.Sprintf("bytes=%d-", start))
 		timeout = 3600
 	} else {
-		return 0, fmt.Errorf("%s:bad range arguements %d-%d ", urlStr, start, end)
+		return 0, fmt.Errorf("%s:bad range arguements %d-%d", urlStr, start, end)
 	}
 	if timeout < 10 {
 		timeout = 10
 	}
-	return doRequestGetBuf(f.ctx, buf, f.mirror, f.bytesgot, urlStr, reqMethod, reqHeader, timeout, body, f.transport, ip, 3, limit)
+	return doRequestGetBuf(f.ctx, buf, f.bytesgot, urlStr, reqMethod, reqHeader, timeout, body, f.transport, ip, 3, limit)
 }
 
-// loadItem 调度,确保 start,end段被顺利下载
-func (f *Fastloader) loadItem(urlStr string, start int64, end int64, ip string) (*bytes.Buffer, error) {
+// loadItem 调度,确保start,end段被顺利下载,若无法下载,整个任务即中断,期间统计mirror质量,ip质量
+func (f *Fastloader) loadItem(start int64, end int64) (*bytes.Buffer, error) {
 	var (
+		urlStr   = f.bestURL()
+		ip       = f.bestIP()
 		buf      = bufferPool.Get().(*bytes.Buffer)
 		err      error
 		n        int64
@@ -372,23 +396,30 @@ func (f *Fastloader) loadItem(urlStr string, start int64, end int64, ip string) 
 	)
 	buf.Reset()
 	for {
+		// 在此统计 mirrors,ip 质量情况
 		n, err = f.requestItem(buf, urlStr, start, end, ip)
+		// ipchan 的缓存区必须大于线程数,确保此处不会阻塞
+		if f.ipchan != nil {
+			f.ipchan <- ip
+		}
 		if err == nil {
+			f.mirror <- &mirrorValue{urlStr, 2}
 			return buf, nil
 		}
+		f.mirror <- &mirrorValue{urlStr, -2}
 		trytimes++
 		if trytimes > maxtimes {
 			return buf, err
 		}
 		urlStr = f.bestURL()
-		ip = f.getIP()
+		ip = f.bestIP()
 		start += n
 	}
 }
 
 // doTask 全部运行在协程内
 func (f *Fastloader) doTask(start int64, end int64, playno int32) {
-	buf, err := f.loadItem(f.bestURL(), start, end, f.getIP())
+	buf, err := f.loadItem(start, end)
 	f.taskres <- &taskres{data: buf, playno: playno, err: err}
 }
 
@@ -421,6 +452,9 @@ func getSizeFromResp(resp *http.Response) (int64, int64) {
 			matches := rangeResReg.FindStringSubmatch(cr)
 			filesize, _ = strconv.ParseInt(matches[1], 10, 64)
 		}
+	}
+	if filesize < total {
+		filesize = total
 	}
 	return filesize, total
 }

@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -13,11 +15,10 @@ import (
 	"github.com/suconghou/utilgo"
 )
 
-var (
-	errArgs = fmt.Errorf("参数错误")
-)
-
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	if len(os.Args) > 2 {
 		err := cli()
 		if err != nil {
@@ -29,6 +30,7 @@ func main() {
 			util.Log.Print(err)
 		}
 	}
+	time.Sleep(time.Minute)
 }
 
 func cli() error {
@@ -42,57 +44,51 @@ func cli() error {
 	}
 }
 
-func daemon() error {
-	return nil
-}
-
 func wget() error {
-	url := os.Args[2]
-	if !utilgo.IsURL(url, true) {
-		return errArgs
+	if len(os.Args) < 3 {
+		return usage()
 	}
-	saveas, err := utilgo.GetStorePath(url)
-	if err != nil {
-		return err
-	}
-	file, fstart, err := utilgo.GetContinue(saveas)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return fastloader.Load(file, url, fstart, nil, os.Stdout, nil)
+	return fastloader.Get(os.Args[2:])
 }
 
 func serve() error {
-	url := os.Args[2]
+	if len(os.Args) < 3 {
+		return usage()
+	}
+	var (
+		url  = os.Args[2]
+		args = os.Args[3:]
+	)
 	if !utilgo.IsURL(url, true) {
-		return errArgs
+		return fmt.Errorf("url format error")
 	}
 	var (
 		port  string
 		upath string
 		err   error
 	)
-	if port, err = utilgo.GetParam("--port"); err != nil {
+	if port, err = utilgo.GetParam(args, "--port"); err != nil {
 		port = "6060"
 	}
 	if !utilgo.IsPort(port) {
-		return errArgs
+		return fmt.Errorf("port param is error")
 	}
-	if upath, err = utilgo.GetParam("--path"); err != nil {
+	if upath, err = utilgo.GetParam(args, "--path"); err != nil {
 		upath = "/"
 	}
 
 	var (
-		thread, thunk, start, end = util.ParseThreadThunkStartEnd(8, 1048576, 0, 0)
-		mirrors                   = util.GetMirrors()
+		thread, thunk, start, end = util.ParseThreadThunkStartEnd(args, 8, 1048576, 0, 0)
+		mirrors                   = util.GetMirrors(args)
+		transport                 = util.GetTransport(args)
 	)
+	mirrors[url] = 1
 
 	http.HandleFunc(upath, func(w http.ResponseWriter, r *http.Request) {
 		ID := util.Uqid()
 		util.Log.Printf("serve for id %x", ID)
 		startTime := time.Now()
-		n, err := fastServe(w, r, url, thread, thunk, r.Header, start, end, mirrors)
+		n, err := fastServe(w, r, mirrors, thread, thunk, r.Header, start, end, transport)
 		speed := float64(n/1024) / time.Since(startTime).Seconds()
 		var stat string
 		if err != nil {
@@ -108,9 +104,9 @@ func serve() error {
 	return http.ListenAndServe(":"+port, nil)
 }
 
-func fastServe(w http.ResponseWriter, r *http.Request, url string, thread int32, thunk int64, reqHeader http.Header, start int64, end int64, mirrors map[string]int) (int64, error) {
-	loader := fastload.NewLoader(url, thread, thunk, reqHeader, nil, nil, nil)
-	reader, resp, _, _, _, err := loader.Load(start, end, uint8(32+len(mirrors)*2), mirrors)
+func fastServe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, thunk int64, reqHeader http.Header, start int64, end int64, transport *http.Transport) (int64, error) {
+	loader := fastload.NewLoader(mirrors, thread, thunk, 4, reqHeader, nil, transport, nil)
+	reader, respHeader, _, _, statusCode, err := loader.Load(start, end)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err
@@ -127,10 +123,10 @@ func fastServe(w http.ResponseWriter, r *http.Request, url string, thread int32,
 	}
 	defer reader.Close()
 	out := w.Header()
-	for key, value := range resp.Header {
-		out.Add(key, value[0])
+	for key, value := range respHeader {
+		out.Set(key, value[0])
 	}
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(statusCode)
 	if r.Method == "HEAD" {
 		return 0, nil
 	}

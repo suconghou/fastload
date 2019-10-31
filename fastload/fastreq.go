@@ -70,7 +70,7 @@ func doRequest(urlStr string, method string, reqHeader http.Header, timeout int6
 	return resp, statusOk, nil
 }
 
-func doRequestGetBuf(ctx context.Context, buf *bytes.Buffer, mirror chan<- *mirrorValue, bytesgot chan<- int64, urlStr string, method string, reqHeader http.Header, timeout int64, body io.Reader, transport *http.Transport, ip string, trytimes uint8, limit int64) (int64, error) {
+func doRequestGetBuf(ctx context.Context, buf *bytes.Buffer, bytesgot chan<- int64, urlStr string, method string, reqHeader http.Header, timeout int64, body io.Reader, transport *http.Transport, ip string, trytimes uint8, limit int64) (int64, error) {
 	var (
 		resp      *http.Response
 		statusOk  bool
@@ -119,15 +119,9 @@ func doRequestGetBuf(ctx context.Context, buf *bytes.Buffer, mirror chan<- *mirr
 		}
 		if err == io.EOF {
 			// 下载完毕
-			if mirror != nil {
-				mirror <- &mirrorValue{urlStr, 2}
-			}
 			return bytesread, nil
 		}
 		// 其他情况,read出错,超时等,需要重新发起请求,放弃本次请求,由上层重新调度,本次已下载数据可使用
-		if mirror != nil {
-			mirror <- &mirrorValue{urlStr, -2}
-		}
 		return bytesread, err
 	}
 

@@ -7,6 +7,15 @@ with progressbar and user defined logger
 mirror download 
 
 
+> 多线程下载
+> 断点续传
+> buffer 池
+> goroutine 池
+> 镜像多源下载
+> 多镜像自动择优
+> CDN分布下载
+> 下载进度条
+> 自定义日志输出
 
 
 ### API 

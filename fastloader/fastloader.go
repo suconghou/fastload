@@ -17,25 +17,54 @@ var (
 	errAlready = fmt.Errorf("该文件已经下载完毕")
 )
 
-// Load do high level wrap of fastload , it is caller's responsibility to close file
-func Load(file *os.File, url string, fstart int64, transport *http.Transport, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
+// Get parse params form args and start download
+func Get(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("url is missing")
+	}
+	url := args[0]
+	if !utilgo.IsURL(url, true) {
+		return fmt.Errorf("url format error")
+	}
+	saveas, err := utilgo.GetStorePath(url)
+	if err != nil {
+		return err
+	}
+	file, fstart, err := utilgo.GetContinue(saveas)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
 	var (
-		logger                    *log.Logger
-		progress                  func(received int64, readed int64, total int64, start int64, end int64)
-		reqHeader                 = util.ParseCookieUaRefer()
-		thread, thunk, start, end = util.ParseThreadThunkStartEnd(8, 2097152, -1, 0)
-		mirrors                   = util.GetMirrors()
+		reqHeader                 = util.ParseCookieUaRefer(args)
+		mirrors                   = util.GetMirrors(args)
+		thread, thunk, start, end = util.ParseThreadThunkStartEnd(args, 8, 2097152, -1, 0)
+		transport                 = util.GetTransport(args)
+	)
+	mirrors[url] = 1
+	if start == -1 {
+		start = fstart
+	}
+	return Load(file, mirrors, thread, thunk, start, end, reqHeader, transport, os.Stdout, nil)
+}
+
+// Load do high level wrap of fastload for cli usage, it is caller's responsibility to close file
+func Load(file *os.File, mirrors map[string]int, thread int32, thunk int64, start int64, end int64, reqHeader http.Header, transport *http.Transport, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
+	var (
+		logger   *log.Logger
+		progress func(received int64, readed int64, total int64, start int64, end int64)
 	)
 	if writer != nil {
 		logger = log.New(writer, "", 0)
-		progress = utilgo.ProgressBar(path.Base(file.Name()), "", hook, writer)
+		progress = utilgo.ProgressBar(path.Base(file.Name())+" ", "", hook, writer)
 	}
 
-	if start != fstart && start == -1 {
-		start = fstart
+	loader := fastload.NewLoader(mirrors, thread, thunk, 4, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
+	reader, respHeader, total, filesize, statusCode, err := loader.Load(start, end)
+	if logger != nil && os.Getenv("debug") != "" {
+		logger.Print(respHeader, statusCode)
 	}
-	loader := fastload.NewLoader(url, thread, thunk, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
-	reader, _, total, filesize, threadreal, err := loader.Load(start, end, uint8(32+len(mirrors)*2), mirrors)
 	if err != nil {
 		if err == io.EOF {
 			return errAlready
@@ -44,7 +73,7 @@ func Load(file *os.File, url string, fstart int64, transport *http.Transport, wr
 	}
 	defer reader.Close()
 	if logger != nil {
-		logger.Print(util.GetWgetInfo(start, end, threadreal, thunk, total, filesize, file.Name()))
+		logger.Print(util.GetWgetInfo(start, end, thread, thunk, total, filesize, file.Name()))
 	}
 	n, err := io.Copy(file, reader)
 	if err != nil {
