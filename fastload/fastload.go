@@ -29,7 +29,7 @@ var (
 )
 
 const (
-	reqMethod = "GET"
+	reqMethod = http.MethodGet
 )
 
 // Fastloader instance
