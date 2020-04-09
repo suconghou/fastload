@@ -266,7 +266,7 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 	}
 	f.end = end
 
-	// 进度条
+	// 进度条 和 镜像统计
 	go func() {
 		for {
 			select {
@@ -280,15 +280,6 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 				if f.start+f.loaded >= f.end {
 					return
 				}
-			}
-		}
-	}()
-	//镜像统计
-	go func() {
-		for {
-			select {
-			case <-f.ctx.Done():
-				return
 			case v := <-f.mirror:
 				f.mirrorLock.Lock()
 				f.mirrors[v.url] += v.value

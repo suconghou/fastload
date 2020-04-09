@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Pipe get resp from url and response the the request can also be a http proxy
@@ -71,7 +72,7 @@ func HTTPProxy(w http.ResponseWriter, r *http.Request) error {
 	if strings.Index(address, ":") == -1 {
 		address = address + ":80"
 	}
-	remote, err := net.Dial("tcp", address)
+	remote, err := net.DialTimeout("tcp", address, time.Minute)
 	if err != nil {
 		return err
 	}
