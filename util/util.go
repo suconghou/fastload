@@ -46,20 +46,20 @@ func Uqid() uint64 {
 }
 
 // GetWgetInfo return wget stat info
-func GetWgetInfo(start int64, end int64, thread int32, thunk int64, total int64, filesize int64, fName string) string {
+func GetWgetInfo(start int64, end int64, thread int32, chunk int64, total int64, filesize int64, fName string) string {
 	var (
 		startstr    string
-		thunkstr    string
+		chunkstr    string
 		showsizestr string
 	)
 	if start != 0 || end != 0 {
 		startstr = fmt.Sprintf(",%d-%d", start, end)
 	}
-	thunkstr = fmt.Sprintf(",分块%dKB", thunk/1024)
+	chunkstr = fmt.Sprintf(",分块%dKB", chunk/1024)
 	if total > 0 && filesize > 0 {
 		showsizestr = fmt.Sprintf(",大小%s/%s(%d/%d)", utilgo.ByteFormat(uint64(total)), utilgo.ByteFormat(uint64(filesize)), total, filesize)
 	}
-	return fmt.Sprintf("%s\n线程%d%s%s%s", fName, thread, thunkstr, showsizestr, startstr)
+	return fmt.Sprintf("%s\n线程%d%s%s%s", fName, thread, chunkstr, showsizestr, startstr)
 }
 
 // GetWgetStat return task end stat info
@@ -84,18 +84,18 @@ func ParseCookieUaRefer(args []string) http.Header {
 	return reqHeader
 }
 
-// ParseThreadThunkStartEnd return thread thunk start end
-func ParseThreadThunkStartEnd(args []string, thread int32, thunk int64, start int64, end int64) (int32, int64, int64, int64) {
+// ParseThreadchunkStartEnd return thread chunk start end
+func ParseThreadchunkStartEnd(args []string, thread int32, chunk int64, start int64, end int64) (int32, int64, int64, int64) {
 	if value, err := utilgo.GetParam(args, "--thread"); err == nil {
 		t, _ := strconv.Atoi(value)
 		if t > 0 && t < 100 {
 			thread = int32(t)
 		}
 	}
-	if value, err := utilgo.GetParam(args, "--thunk"); err == nil {
+	if value, err := utilgo.GetParam(args, "--chunk"); err == nil {
 		t, _ := strconv.Atoi(value)
 		if t > 64 && t < 8192 {
-			thunk = int64(t * 1024)
+			chunk = int64(t * 1024)
 		}
 	}
 	for _, item := range args {
@@ -110,7 +110,7 @@ func ParseThreadThunkStartEnd(args []string, thread int32, thunk int64, start in
 			break
 		}
 	}
-	return thread, thunk, start, end
+	return thread, chunk, start, end
 }
 
 // GetTransport return *http.Transport

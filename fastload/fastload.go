@@ -37,7 +37,7 @@ type Fastloader struct {
 	mirrors    map[string]int
 	mirror     chan *mirrorValue
 	mirrorLock *sync.Mutex
-	thunk      int64
+	chunk      int64
 	thread     int32
 	reqHeader  http.Header
 	transport  *http.Transport
@@ -169,13 +169,13 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-//Get load with certain ua and thread thunk
+//Get load with certain ua and thread chunk
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, http.Header, int64, int64, int, error) {
 	return NewLoader(map[string]int{url: 1}, 4, 524288, 4, nil, progress, nil, logger).Load(start, end)
 }
 
 // NewLoader return new loader instance
-func NewLoader(mirrors map[string]int, thread int32, thunk int64, low uint8, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, logger *log.Logger) *Fastloader {
+func NewLoader(mirrors map[string]int, thread int32, chunk int64, low uint8, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, logger *log.Logger) *Fastloader {
 	if reqHeader == nil {
 		reqHeader = http.Header{}
 	}
@@ -188,7 +188,7 @@ func NewLoader(mirrors map[string]int, thread int32, thunk int64, low uint8, req
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fastloader{
 		thread:    thread,
-		thunk:     thunk,
+		chunk:     chunk,
 		progress:  progress,
 		reqHeader: reqHeader,
 		transport: transport,
@@ -291,8 +291,8 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 	go func() {
 		var curr int32
 		for {
-			start := int64(curr)*f.thunk + f.start
-			end := start + f.thunk
+			start := int64(curr)*f.chunk + f.start
+			end := start + f.chunk
 			if end >= f.end {
 				end = f.end
 				f.endno = curr

@@ -30,9 +30,9 @@ func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func
 	return io.Copy(w, resp.Body)
 }
 
-// FastPipe use fastload for pipe, thread should be 2-8 , thunk should be 262144-1048576 (256KB-1024KB), mirrors should not be nil
-func FastPipe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, thunk int64, rewriteHeader func(*http.Header, *http.Header, int) int, transport *http.Transport) (int64, error) {
-	loader := NewLoader(mirrors, thread, thunk, 4, r.Header, nil, transport, nil)
+// FastPipe use fastload for pipe, thread should be 2-8 , chunk should be 262144-1048576 (256KB-1024KB), mirrors should not be nil
+func FastPipe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, rewriteHeader func(*http.Header, *http.Header, int) int, transport *http.Transport) (int64, error) {
+	loader := NewLoader(mirrors, thread, chunk, 4, r.Header, nil, transport, nil)
 	defer loader.Close()
 	body, respHeader, total, filesize, statusCode, err := loader.Load(0, 0)
 	if err != nil {

@@ -78,7 +78,7 @@ func serve() error {
 	}
 
 	var (
-		thread, thunk, start, end = util.ParseThreadThunkStartEnd(args, 8, 1048576, 0, 0)
+		thread, chunk, start, end = util.ParseThreadchunkStartEnd(args, 8, 1048576, 0, 0)
 		mirrors                   = util.GetMirrors(args)
 		transport                 = util.GetTransport(args)
 	)
@@ -88,7 +88,7 @@ func serve() error {
 		ID := util.Uqid()
 		util.Log.Printf("serve for id %x", ID)
 		startTime := time.Now()
-		n, err := fastServe(w, r, mirrors, thread, thunk, r.Header, start, end, transport)
+		n, err := fastServe(w, r, mirrors, thread, chunk, r.Header, start, end, transport)
 		speed := float64(n/1024) / time.Since(startTime).Seconds()
 		var stat string
 		if err != nil {
@@ -104,8 +104,8 @@ func serve() error {
 	return http.ListenAndServe(":"+port, nil)
 }
 
-func fastServe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, thunk int64, reqHeader http.Header, start int64, end int64, transport *http.Transport) (int64, error) {
-	loader := fastload.NewLoader(mirrors, thread, thunk, 4, reqHeader, nil, transport, nil)
+func fastServe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, reqHeader http.Header, start int64, end int64, transport *http.Transport) (int64, error) {
+	loader := fastload.NewLoader(mirrors, thread, chunk, 4, reqHeader, nil, transport, nil)
 	reader, respHeader, _, _, statusCode, err := loader.Load(start, end)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

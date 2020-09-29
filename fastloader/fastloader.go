@@ -39,18 +39,18 @@ func Get(args []string) error {
 	var (
 		reqHeader                 = util.ParseCookieUaRefer(args)
 		mirrors                   = util.GetMirrors(args)
-		thread, thunk, start, end = util.ParseThreadThunkStartEnd(args, 8, 2097152, -1, 0)
+		thread, chunk, start, end = util.ParseThreadchunkStartEnd(args, 8, 2097152, -1, 0)
 		transport                 = util.GetTransport(args)
 	)
 	mirrors[url] = 1
 	if start == -1 {
 		start = fstart
 	}
-	return Load(file, mirrors, thread, thunk, start, end, reqHeader, transport, os.Stdout, nil)
+	return Load(file, mirrors, thread, chunk, start, end, reqHeader, transport, os.Stdout, nil)
 }
 
 // Load do high level wrap of fastload for cli usage, it is caller's responsibility to close file
-func Load(file *os.File, mirrors map[string]int, thread int32, thunk int64, start int64, end int64, reqHeader http.Header, transport *http.Transport, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
+func Load(file *os.File, mirrors map[string]int, thread int32, chunk int64, start int64, end int64, reqHeader http.Header, transport *http.Transport, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
 	var (
 		logger   *log.Logger
 		progress func(received int64, readed int64, total int64, start int64, end int64)
@@ -60,7 +60,7 @@ func Load(file *os.File, mirrors map[string]int, thread int32, thunk int64, star
 		progress = utilgo.ProgressBar(path.Base(file.Name())+" ", "", hook, writer)
 	}
 
-	loader := fastload.NewLoader(mirrors, thread, thunk, 4, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
+	loader := fastload.NewLoader(mirrors, thread, chunk, 4, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
 	reader, respHeader, total, filesize, statusCode, err := loader.Load(start, end)
 	if logger != nil && os.Getenv("debug") != "" {
 		logger.Print(respHeader, statusCode)
@@ -73,7 +73,7 @@ func Load(file *os.File, mirrors map[string]int, thread int32, thunk int64, star
 	}
 	defer reader.Close()
 	if logger != nil {
-		logger.Print(util.GetWgetInfo(start, end, thread, thunk, total, filesize, file.Name()))
+		logger.Print(util.GetWgetInfo(start, end, thread, chunk, total, filesize, file.Name()))
 	}
 	n, err := io.Copy(file, reader)
 	if err != nil {
