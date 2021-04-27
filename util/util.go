@@ -41,8 +41,7 @@ func GetMirrors(args []string) map[string]int {
 
 // Uqid retrun counter
 func Uqid() uint64 {
-	atomic.AddUint64(&ops, 1)
-	return atomic.LoadUint64(&ops)
+	return atomic.AddUint64(&ops, 1)
 }
 
 // GetWgetInfo return wget stat info
