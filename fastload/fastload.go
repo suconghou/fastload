@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
@@ -180,7 +179,7 @@ func NewLoader(mirrors map[string]int, thread int32, chunk int64, low uint8, req
 		reqHeader = http.Header{}
 	}
 	if logger == nil {
-		logger = log.New(ioutil.Discard, "", log.Lshortfile|log.LstdFlags)
+		logger = log.New(io.Discard, "", log.Lshortfile|log.LstdFlags)
 	}
 	if low < 2 {
 		low = 2
