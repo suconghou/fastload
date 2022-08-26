@@ -66,7 +66,7 @@ func doRequest(urlStr string, method string, reqHeader http.Header, timeout int6
 	if err != nil {
 		return resp, false, err
 	}
-	statusOk := resp.StatusCode >= http.StatusOK && resp.StatusCode <= http.StatusIMUsed
+	statusOk := resp.StatusCode/100 == 2
 	return resp, statusOk, nil
 }
 
