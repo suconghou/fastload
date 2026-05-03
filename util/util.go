@@ -1,18 +1,15 @@
 package util
 
 import (
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"sync/atomic"
 
 	"github.com/suconghou/utilgo"
-	"golang.org/x/net/proxy"
 )
 
 var (
@@ -110,25 +107,4 @@ func ParseThreadchunkStartEnd(args []string, thread int32, chunk int64, start in
 		}
 	}
 	return thread, chunk, start, end
-}
-
-// GetTransport return *http.Transport
-func GetTransport(args []string) *http.Transport {
-	var (
-		skipVerify = utilgo.HasFlag(args, "--no-check-certificate")
-		tlsCfg     = &tls.Config{InsecureSkipVerify: skipVerify}
-	)
-	if str, err := utilgo.GetParam(args, "--socks"); err == nil {
-		dialer, err := proxy.SOCKS5("tcp", str, nil, proxy.Direct)
-		if err == nil {
-			return &http.Transport{Dial: dialer.Dial, TLSClientConfig: tlsCfg}
-		}
-	} else if str, err := utilgo.GetParam(args, "--proxy"); err == nil {
-		urli := url.URL{}
-		urlproxy, err := urli.Parse(str)
-		if err == nil {
-			return &http.Transport{Proxy: http.ProxyURL(urlproxy), TLSClientConfig: tlsCfg}
-		}
-	}
-	return &http.Transport{TLSClientConfig: tlsCfg}
 }

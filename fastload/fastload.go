@@ -8,23 +8,15 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"regexp"
-	"strconv"
 	"sync"
 
 	"github.com/suconghou/utilgo/pool"
 )
 
 var (
-	rangeReqReg = regexp.MustCompile(`^bytes=(\d+)-(\d+)?$`)
-	rangeResReg = regexp.MustCompile(`\d+/(\d+)`)
-	bufferPool  = sync.Pool{
-		New: func() interface{} {
-			return bytes.NewBuffer(make([]byte, 0, 262144))
-		},
-	}
-	// ErrCanceled flag this is user canceled
-	ErrCanceled = fmt.Errorf("canceled")
+	bufferPool = NewGenericPool(func() *bytes.Buffer {
+		return bytes.NewBuffer(make([]byte, 0, 262144)) // 262144 就是 256KB
+	})
 )
 
 const (
@@ -39,7 +31,6 @@ type Fastloader struct {
 	chunk      int64
 	thread     int32
 	reqHeader  http.Header
-	transport  *http.Transport
 	pool       *pool.GoPool
 
 	logger   *log.Logger
@@ -144,7 +135,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	for {
 		select {
 		case <-f.ctx.Done():
-			return 0, ErrCanceled
+			return 0, f.ctx.Err()
 		case task := <-f.taskres:
 			f.dataMap[task.playno] = task
 			// 有新的块来了,更新存储桶,如果来的块是要找的块,我们中断,下次调用就会读这个块了
@@ -155,7 +146,7 @@ func (f *Fastloader) Read(p []byte) (int, error) {
 	}
 }
 
-//Close clean work
+// Close clean work
 func (f *Fastloader) Close() error {
 	f.cancel()
 	for _, item := range f.dataMap {
@@ -168,13 +159,13 @@ func (f *Fastloader) Close() error {
 	return nil
 }
 
-//Get load with certain ua and thread chunk
+// Get load with certain ua and thread chunk
 func Get(url string, start int64, end int64, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) (io.ReadCloser, http.Header, int64, int64, int, error) {
-	return NewLoader(map[string]int{url: 1}, 4, 524288, 4, nil, progress, nil, logger).Load(start, end)
+	return NewLoader(context.Background(), map[string]int{url: 1}, 4, 524288, 4, nil, progress, logger).Load(start, end)
 }
 
 // NewLoader return new loader instance
-func NewLoader(mirrors map[string]int, thread int32, chunk int64, low uint8, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), transport *http.Transport, logger *log.Logger) *Fastloader {
+func NewLoader(ctx context.Context, mirrors map[string]int, thread int32, chunk int64, low uint8, reqHeader http.Header, progress func(received int64, readed int64, total int64, start int64, end int64), logger *log.Logger) *Fastloader {
 	if reqHeader == nil {
 		reqHeader = http.Header{}
 	}
@@ -184,13 +175,12 @@ func NewLoader(mirrors map[string]int, thread int32, chunk int64, low uint8, req
 	if low < 2 {
 		low = 2
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	return &Fastloader{
 		thread:    thread,
 		chunk:     chunk,
 		progress:  progress,
 		reqHeader: reqHeader,
-		transport: transport,
 		logger:    logger,
 		taskres:   make(chan *taskres, thread),
 		bytesgot:  make(chan int64, thread),
@@ -220,15 +210,15 @@ func (f *Fastloader) PutIPs(ips []string, lock bool) {
 	}
 }
 
-//Load return reader , resp , rangesize , total , thread , error ; low should be 16 - 128 bigger means timeout quickly on low speed , when use mirrors , it should be bigger (64-512)
+// Load return reader , resp , rangesize , total , thread , error ; low should be 16 - 128 bigger means timeout quickly on low speed , when use mirrors , it should be bigger (64-512)
 func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, int64, int64, int, error) {
 	urlStr := f.bestURL()
 	// 如果f.reqHeader 里包含了start,end,且参数未指明start,end, 则以reqHeader里的为准
-	start, end = reGetFetchSegment(f.reqHeader, start, end)
+	start, end = fixFetchSegment(f.reqHeader, start, end)
 	// 发起一个普通请求,验证是否支持断点续传
 	const r = "Range"
 	var (
-		reqHeader = cloneHeader(f.reqHeader)
+		reqHeader = f.reqHeader.Clone()
 		timeout   int64
 	)
 	if end > start && start >= 0 {
@@ -240,12 +230,12 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 	} else {
 		return nil, nil, 0, 0, 0, fmt.Errorf("%s:bad range arguements %d-%d ", urlStr, start, end)
 	}
-	resp, statusOk, err := doRequest(urlStr, reqMethod, reqHeader, timeout, nil, f.transport, "")
+	resp, statusOk, err := doRequest(f.ctx, urlStr, reqMethod, reqHeader, timeout, nil, "")
 	if err != nil {
 		return nil, nil, 0, 0, 0, err
 	}
 	if !statusOk {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			return nil, resp.Header, 0, 0, resp.StatusCode, io.EOF
 		}
@@ -254,11 +244,11 @@ func (f *Fastloader) Load(start int64, end int64) (io.ReadCloser, http.Header, i
 	// 需假设服务器都正确的返回了ContentLength,f.total 必然为正整数
 	f.start = start
 	// filesize 和 total 可能为-1,服务器未指明大小,此时回退到单线程
-	f.filesize, f.total = getSizeFromResp(resp)
+	f.filesize, f.total = responseLength(resp)
 	if !resp.ProtoAtLeast(1, 1) || (f.filesize == -1 && f.total == -1) {
 		return &writeCounter{loader: f, r: resp.Body}, resp.Header, f.total, f.filesize, resp.StatusCode, nil
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	// 当用户设置的end明显不对,(我们已经获取了length),自动修正这个错误
 	if end > f.total+f.start || end <= 0 {
 		end = f.total + f.start
@@ -349,7 +339,7 @@ func (f *Fastloader) bestIP() string {
 func (f *Fastloader) requestItem(buf *bytes.Buffer, urlStr string, start int64, end int64, ip string) (int64, error) {
 	const r = "Range"
 	var (
-		reqHeader = cloneHeader(f.reqHeader)
+		reqHeader = f.reqHeader.Clone()
 		timeout   int64
 		body      io.Reader
 		limit     int64
@@ -370,7 +360,7 @@ func (f *Fastloader) requestItem(buf *bytes.Buffer, urlStr string, start int64, 
 	if timeout < 10 {
 		timeout = 10
 	}
-	return doRequestGetBuf(f.ctx, buf, f.bytesgot, urlStr, reqMethod, reqHeader, timeout, body, f.transport, ip, 3, limit)
+	return doRequestGet(f.ctx, buf, f.bytesgot, urlStr, reqMethod, reqHeader, timeout, body, ip, 3, limit)
 }
 
 // loadItem 调度,确保start,end段被顺利下载,若无法下载,整个任务即中断,期间统计mirror质量,ip质量
@@ -378,7 +368,7 @@ func (f *Fastloader) loadItem(start int64, end int64) (*bytes.Buffer, error) {
 	var (
 		urlStr   = f.bestURL()
 		ip       = f.bestIP()
-		buf      = bufferPool.Get().(*bytes.Buffer)
+		buf      = bufferPool.Get()
 		err      error
 		n        int64
 		maxtimes = 3
@@ -411,40 +401,4 @@ func (f *Fastloader) loadItem(start int64, end int64) (*bytes.Buffer, error) {
 func (f *Fastloader) doTask(start int64, end int64, playno int32) {
 	buf, err := f.loadItem(start, end)
 	f.taskres <- &taskres{data: buf, playno: playno, err: err}
-}
-
-// 下面辅助函数
-
-func reGetFetchSegment(reqHeader http.Header, start int64, end int64) (int64, int64) {
-	if start > 0 || end > 0 {
-		return start, end
-	}
-	if str := reqHeader.Get("Range"); str != "" && rangeReqReg.MatchString(str) {
-		matches := rangeReqReg.FindStringSubmatch(str)
-		start, _ = strconv.ParseInt(matches[1], 10, 64)
-		if matches[2] != "" {
-			end, _ = strconv.ParseInt(matches[2], 10, 64)
-		} else {
-			end = 0
-		}
-	}
-	return start, end
-}
-
-func getSizeFromResp(resp *http.Response) (int64, int64) {
-	var (
-		total    = resp.ContentLength
-		filesize = resp.ContentLength
-	)
-	if resp.StatusCode == http.StatusPartialContent {
-		cr := resp.Header.Get("Content-Range")
-		if rangeResReg.MatchString(cr) {
-			matches := rangeResReg.FindStringSubmatch(cr)
-			filesize, _ = strconv.ParseInt(matches[1], 10, 64)
-		}
-	}
-	if filesize < total {
-		filesize = total
-	}
-	return filesize, total
 }

@@ -1,6 +1,7 @@
 package fastloader
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -40,17 +41,16 @@ func Get(args []string) error {
 		reqHeader                 = util.ParseCookieUaRefer(args)
 		mirrors                   = util.GetMirrors(args)
 		thread, chunk, start, end = util.ParseThreadchunkStartEnd(args, 8, 2097152, -1, 0)
-		transport                 = util.GetTransport(args)
 	)
 	mirrors[url] = 1
 	if start == -1 {
 		start = fstart
 	}
-	return Load(file, mirrors, thread, chunk, start, end, reqHeader, transport, os.Stdout, nil)
+	return Load(context.Background(), file, mirrors, thread, chunk, start, end, reqHeader, os.Stdout, nil)
 }
 
 // Load do high level wrap of fastload for cli usage, it is caller's responsibility to close file
-func Load(file *os.File, mirrors map[string]int, thread int32, chunk int64, start int64, end int64, reqHeader http.Header, transport *http.Transport, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
+func Load(ctx context.Context, file *os.File, mirrors map[string]int, thread int32, chunk int64, start int64, end int64, reqHeader http.Header, writer io.Writer, hook func(loaded float64, speed float64, remain float64)) error {
 	var (
 		logger   *log.Logger
 		progress func(received int64, readed int64, total int64, start int64, end int64)
@@ -60,7 +60,7 @@ func Load(file *os.File, mirrors map[string]int, thread int32, chunk int64, star
 		progress = utilgo.ProgressBar(path.Base(file.Name())+" ", "", hook, writer)
 	}
 
-	loader := fastload.NewLoader(mirrors, thread, chunk, 4, reqHeader, progress, transport, log.New(os.Stderr, "", 0))
+	loader := fastload.NewLoader(ctx, mirrors, thread, chunk, 4, reqHeader, progress, log.New(os.Stderr, "", 0))
 	reader, respHeader, total, filesize, statusCode, err := loader.Load(start, end)
 	if logger != nil && os.Getenv("debug") != "" {
 		logger.Print(respHeader, statusCode)

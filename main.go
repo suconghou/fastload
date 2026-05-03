@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -16,9 +14,6 @@ import (
 )
 
 func main() {
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
 	if len(os.Args) > 2 {
 		err := cli()
 		if err != nil {
@@ -30,7 +25,6 @@ func main() {
 			util.Log.Print(err)
 		}
 	}
-	time.Sleep(time.Minute)
 }
 
 func cli() error {
@@ -80,7 +74,6 @@ func serve() error {
 	var (
 		thread, chunk, start, end = util.ParseThreadchunkStartEnd(args, 8, 1048576, 0, 0)
 		mirrors                   = util.GetMirrors(args)
-		transport                 = util.GetTransport(args)
 	)
 	mirrors[url] = 1
 
@@ -88,7 +81,7 @@ func serve() error {
 		ID := util.Uqid()
 		util.Log.Printf("serve for id %x", ID)
 		startTime := time.Now()
-		n, err := fastServe(w, r, mirrors, thread, chunk, r.Header, start, end, transport)
+		n, err := fastServe(w, r, mirrors, thread, chunk, r.Header, start, end)
 		speed := float64(n/1024) / time.Since(startTime).Seconds()
 		var stat string
 		if err != nil {
@@ -104,22 +97,12 @@ func serve() error {
 	return http.ListenAndServe(":"+port, nil)
 }
 
-func fastServe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, reqHeader http.Header, start int64, end int64, transport *http.Transport) (int64, error) {
-	loader := fastload.NewLoader(mirrors, thread, chunk, 4, reqHeader, nil, transport, nil)
+func fastServe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, reqHeader http.Header, start int64, end int64) (int64, error) {
+	loader := fastload.NewLoader(r.Context(), mirrors, thread, chunk, 4, reqHeader, nil, nil)
 	reader, respHeader, _, _, statusCode, err := loader.Load(start, end)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err
-	}
-	closeNotifier, ok := w.(http.CloseNotifier)
-	if ok {
-		closeNotify := closeNotifier.CloseNotify()
-		go func() {
-			select {
-			case <-closeNotify:
-				reader.Close()
-			}
-		}()
 	}
 	defer reader.Close()
 	out := w.Header()

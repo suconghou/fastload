@@ -11,8 +11,8 @@ import (
 )
 
 // Pipe get resp from url and response the the request can also be a http proxy
-func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func(*http.Header, *http.Header, int) int, timeout int64, transport *http.Transport) (int64, error) {
-	resp, _, err := doRequest(url, r.Method, r.Header, timeout, r.Body, transport, "")
+func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func(*http.Header, *http.Header, int) int, timeout int64) (int64, error) {
+	resp, _, err := doRequest(r.Context(), url, r.Method, r.Header, timeout, r.Body, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return 0, err
@@ -31,8 +31,8 @@ func Pipe(w http.ResponseWriter, r *http.Request, url string, rewriteHeader func
 }
 
 // FastPipe use fastload for pipe, thread should be 2-8 , chunk should be 262144-1048576 (256KB-1024KB), mirrors should not be nil
-func FastPipe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, rewriteHeader func(*http.Header, *http.Header, int) int, transport *http.Transport) (int64, error) {
-	loader := NewLoader(mirrors, thread, chunk, 4, r.Header, nil, transport, nil)
+func FastPipe(w http.ResponseWriter, r *http.Request, mirrors map[string]int, thread int32, chunk int64, rewriteHeader func(*http.Header, *http.Header, int) int) (int64, error) {
+	loader := NewLoader(r.Context(), mirrors, thread, chunk, 4, r.Header, nil, nil)
 	defer loader.Close()
 	body, respHeader, total, filesize, statusCode, err := loader.Load(0, 0)
 	if err != nil {
@@ -69,7 +69,7 @@ func HTTPProxy(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	address := hostPortURL.Host
-	if strings.Index(address, ":") == -1 {
+	if !strings.Contains(address, ":") {
 		address = address + ":80"
 	}
 	remote, err := net.DialTimeout("tcp", address, time.Minute)
@@ -77,11 +77,13 @@ func HTTPProxy(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer remote.Close()
-	r.Write(remote)
+	if err = r.Write(remote); err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { io.Copy(remote, buf); wg.Done() }()
-	go func() { io.Copy(buf, remote); wg.Done() }()
+	go func() { _, _ = io.Copy(remote, buf); wg.Done() }()
+	go func() { _, _ = io.Copy(buf, remote); wg.Done() }()
 	wg.Wait()
 	return nil
 }
